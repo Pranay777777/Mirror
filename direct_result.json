@@ -1,0 +1,198 @@
+{
+  "analysis_metadata": {
+    "total_frames": 600,
+    "processed_frames": 600,
+    "successful_frames": 600,
+    "frame_skip": 1,
+    "processing_success_rate": 1.0,
+    "duration": 10.0
+  },
+  "temporal_features": {
+    "posture_stability": {
+      "value": 0.557,
+      "confidence": 1.0,
+      "evidence_ratio": 0.55,
+      "method": "cv_stability",
+      "reason": "calculated"
+    },
+    "gaze_stability": {
+      "value": 0.7456,
+      "confidence": 1.0,
+      "evidence_ratio": 0.55,
+      "method": "cv_stability",
+      "reason": "calculated"
+    },
+    "stable_gaze_duration": {
+      "value": 0.38,
+      "confidence": 1.0,
+      "evidence_ratio": 0.55,
+      "method": "rolling_std",
+      "reason": "calculated"
+    },
+    "smile_intensity": {
+      "value": 0.1538,
+      "confidence": 0.065,
+      "evidence_ratio": 0.065,
+      "method": "adaptive_zscore",
+      "reason": "calculated"
+    },
+    "expression_variability": {
+      "value": 0.2486,
+      "confidence": 0.065,
+      "evidence_ratio": 0.065,
+      "method": "action_unit_std",
+      "reason": "calculated"
+    },
+    "expression_dynamics": {
+      "value": 1.0,
+      "confidence": 0.065,
+      "evidence_ratio": 0.065,
+      "method": "temporal_variation",
+      "reason": "calculated"
+    },
+    "blink_rate": {
+      "value": null,
+      "confidence": 0.0,
+      "evidence_ratio": 0.065,
+      "method": "adaptive_zscore",
+      "reason": "insufficient_eye_data"
+    },
+    "eye_contact_consistency": {
+      "value": null,
+      "confidence": 0.0,
+      "evidence_ratio": 0.065,
+      "method": "gaze_angle",
+      "reason": "insufficient_gaze_data"
+    },
+    "eye_contact_duration": {
+      "value": null,
+      "confidence": 0.0,
+      "evidence_ratio": 0.065,
+      "method": "gaze_angle",
+      "reason": "insufficient_gaze_data"
+    },
+    "overall_movement_intensity": {
+      "value": 183.9492,
+      "confidence": 1.0,
+      "evidence_ratio": 1.0,
+      "method": "velocity_mean",
+      "reason": "calculated"
+    },
+    "posture_confidence": {
+      "value": 0.3925,
+      "confidence": 1.0,
+      "evidence_ratio": 0.55,
+      "method": "composite_stability",
+      "reason": "calculated"
+    },
+    "data_completeness": {
+      "value": 1.0,
+      "confidence": 1.0,
+      "evidence_ratio": 1.0,
+      "method": "feature_coverage",
+      "reason": "calculated"
+    }
+  },
+  "posture_analysis": {
+    "stability_score": {
+      "value": 0.557,
+      "confidence": 1.0,
+      "evidence_ratio": 0.55,
+      "method": "cv_stability",
+      "reason": "calculated"
+    },
+    "uprightness_score": {
+      "value": 0.3925,
+      "confidence": 1.0,
+      "evidence_ratio": 0.55,
+      "method": "composite_stability",
+      "reason": "calculated"
+    },
+    "movement_intensity": {
+      "value": 183.9492,
+      "confidence": 1.0,
+      "evidence_ratio": 1.0,
+      "method": "velocity_mean",
+      "reason": "calculated"
+    },
+    "interpretation": "Frequent movement detected"
+  },
+  "engagement_analysis": {
+    "gaze_stability": {
+      "value": 0.7456,
+      "confidence": 1.0,
+      "evidence_ratio": 0.55,
+      "method": "cv_stability",
+      "reason": "calculated"
+    },
+    "eye_contact_consistency": {
+      "value": null,
+      "confidence": 0.0,
+      "evidence_ratio": 0.065,
+      "method": "gaze_angle",
+      "reason": "insufficient_gaze_data"
+    },
+    "eye_contact_duration": {
+      "value": null,
+      "confidence": 0.0,
+      "evidence_ratio": 0.065,
+      "method": "gaze_angle",
+      "reason": "insufficient_gaze_data"
+    },
+    "stable_gaze_duration": {
+      "value": 0.38,
+      "confidence": 1.0,
+      "evidence_ratio": 0.55,
+      "method": "rolling_std",
+      "reason": "calculated"
+    },
+    "interpretation": "Insufficient data to assess eye contact (face not clearly visible)"
+  },
+  "expression_analysis": {
+    "expression_dynamics": {
+      "value": 1.0,
+      "confidence": 0.065,
+      "evidence_ratio": 0.065,
+      "method": "temporal_variation",
+      "reason": "calculated"
+    },
+    "smile_intensity": {
+      "value": 0.1538,
+      "confidence": 0.065,
+      "evidence_ratio": 0.065,
+      "method": "adaptive_zscore",
+      "reason": "calculated"
+    },
+    "expression_variability": {
+      "value": 0.2486,
+      "confidence": 0.065,
+      "evidence_ratio": 0.065,
+      "method": "action_unit_std",
+      "reason": "calculated"
+    },
+    "blink_rate": {
+      "value": null,
+      "confidence": 0.0,
+      "evidence_ratio": 0.065,
+      "method": "adaptive_zscore",
+      "reason": "insufficient_eye_data"
+    },
+    "interpretation": "Insufficient data to assess expression"
+  },
+  "confidence_metrics": {
+    "overall_confidence": {
+      "value": 0.3925,
+      "confidence": 1.0,
+      "evidence_ratio": 0.55,
+      "method": "composite_stability",
+      "reason": "calculated"
+    },
+    "data_quality": {
+      "value": 1.0,
+      "confidence": 1.0,
+      "evidence_ratio": 1.0,
+      "method": "feature_coverage",
+      "reason": "calculated"
+    }
+  }
+}

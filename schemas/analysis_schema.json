@@ -1,0 +1,94 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+        "analysis_version": {
+            "type": "string"
+        },
+        "results": {
+            "type": "object",
+            "required": [
+                "multimodal_analysis",
+                "qualitative_feedback",
+                "transcript",
+                "summary_view"
+            ],
+            "properties": {
+                "multimodal_analysis": {
+                    "type": [
+                        "object",
+                        "null"
+                    ],
+                    "properties": {
+                        "analysis_metadata": {
+                            "type": "object"
+                        },
+                        "temporal_features": {
+                            "type": "object"
+                        },
+                        "posture_analysis": {
+                            "type": "object"
+                        },
+                        "engagement_analysis": {
+                            "type": "object"
+                        },
+                        "expression_analysis": {
+                            "type": "object"
+                        },
+                        "speech_analysis": {
+                            "type": "object"
+                        },
+                        "vocal_diagnostics": {
+                            "type": "object"
+                        },
+                        "linguistic_diagnostics": {
+                            "type": "object"
+                        },
+                        "head_pose_diagnostics": {
+                            "type": "object"
+                        },
+                        "confidence_metrics": {
+                            "type": "object"
+                        }
+                    },
+                    "required": [
+                        "analysis_metadata",
+                        "temporal_features",
+                        "posture_analysis",
+                        "engagement_analysis",
+                        "expression_analysis",
+                        "speech_analysis",
+                        "vocal_diagnostics",
+                        "linguistic_diagnostics",
+                        "head_pose_diagnostics",
+                        "confidence_metrics"
+                    ]
+                },
+                "qualitative_feedback": {
+                    "type": "object"
+                },
+                "transcript": {
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "summary_view": {
+                    "type": "object"
+                },
+                "overall_confidence": {
+                    "type": "number"
+                },
+                "professionalism_score": {
+                    "type": "number"
+                },
+                "communication_score": {
+                    "type": "number"
+                }
+            }
+        }
+    },
+    "required": [
+        "results"
+    ]
+}
