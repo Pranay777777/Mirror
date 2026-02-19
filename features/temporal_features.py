@@ -4,11 +4,10 @@ Temporal feature extraction for behavioral analysis.
 Transforms frame-level features into time-aware behavioral metrics.
 Captures dynamics, patterns, and stability over sliding windows.
 
-v2.0 — Adaptive behavioral modeling:
+v3.0 — Lean Binary Architecture:
 - Z-score adaptive blink detection (no fixed EAR thresholds)
-- Gaze-angle eye contact (cumulative, not contiguous)
+- Lean binary eye contact (gaze < 12° threshold, no Gaussian)
 - Adaptive expression modeling with per-video normalisation
-- Probabilistic output with evidence_ratio and method
 - Full-video accumulation with smoothing
 """
 
@@ -41,8 +40,6 @@ class TemporalFeatures:
         blink_min_duration_ms: float = 100.0,
         blink_max_duration_ms: float = 300.0,
         blink_min_consecutive: int = 2,
-        # Eye contact
-        gaze_alignment_threshold_deg: float = 6.0,
         # Expression
         expression_evidence_min: float = 0.3,
         # Smoothing
@@ -62,9 +59,6 @@ class TemporalFeatures:
         self.blink_min_duration_ms = blink_min_duration_ms
         self.blink_max_duration_ms = blink_max_duration_ms
         self.blink_min_consecutive = blink_min_consecutive
-
-        # Eye contact parameters
-        self.gaze_alignment_threshold_deg = gaze_alignment_threshold_deg
 
         # Expression parameters
         self.expression_evidence_min = expression_evidence_min
@@ -289,197 +283,54 @@ class TemporalFeatures:
         confidence = coverage * 0.5 + signal_conf * 0.5
         confidence = min(1.0, max(0.0, confidence))
 
-        return blink_count, blink_events, confidence
+        return blink_count, blink_events, round(float(confidence), 3)
 
     # ==================================================================
-    # PHASE 3 — Gaze-Angle Eye Contact
+    # PHASE X - Global Camera Offset Correction
     # ==================================================================
-    def _compute_eye_contact(self, gaze_angles: pd.Series, gaze_yaws: pd.Series = None) -> Tuple[float, float, float, int]:
+    def _estimate_camera_offset(self, gaze_angles: pd.Series, gaze_yaws: pd.Series, total_frames: int) -> float:
         """
-        Compute eye contact score and direction switches.
-
-        Returns:
-            (ratio, total_duration, confidence, switch_count, max_continuous_duration, diagnostics)
+        Estimate the camera-screen angular bias.
+        Criteria:
+        - Head yaw near 0 (looking at screen)
+        - Early part of video (first 30% or 300 frames)
+        - Low motion (implied by stable yaw)
         """
-        if len(gaze_angles) < 3:
-            return 0.0, 0.0, 0.0, 0
-            
-        clean_angle = gaze_angles.dropna()
-        # Ensure alignment of indices if yaw is provided
-        if gaze_yaws is not None:
-             clean_yaw = gaze_yaws.loc[clean_angle.index]
-        else:
-             clean_yaw = pd.Series([0.0]*len(clean_angle), index=clean_angle.index)
-
-        total = len(clean_angle)
-        
-        # 0. Normalize Head Yaw (if provided)
-        # Map to [-90, +90] range.
-        if gaze_yaws is not None:
-             # Standard normalization to [-180, 180] first
-             clean_yaw = (clean_yaw + 180) % 360 - 180
-             # Then clamp to [-90, 90] as valid range
-             clean_yaw = clean_yaw.clip(-90, 90)
-        else:
-             # Default to 0 if not provided
-             clean_yaw = pd.Series([0.0]*len(clean_angle), index=clean_angle.index)
-        
-        # 1. Probabilistic Gaze Model (v5.0 Gaussian)
-        # Gaze Probability: exp(-(gaze^2) / (2 * sigma^2))
-        sigma = 8.0 # User defined webcam tolerance
-        gaze_sq = clean_angle.pow(2)
-        gaze_prob = np.exp(-gaze_sq / (2 * (sigma ** 2)))
-        gaze_prob = gaze_prob.clip(0.0, 1.0)
-        
-        # Head Pose Soft Confidence
-        # head_weight = exp(-(yaw^2) / (2 * head_sigma^2))
-        head_sigma = 35.0
-        yaw_sq = clean_yaw.pow(2)
-        head_weight = np.exp(-yaw_sq / (2 * (head_sigma ** 2)))
-        head_weight = head_weight.clip(0.3, 1.0) # Never zero-out
-        
-        # Final Contact Probability
-        # weighted combination
-        final_contact_prob = (gaze_prob * 0.75) + (gaze_prob * head_weight * 0.25)
-        
-        # consistency = mean probability
-        eye_contact_ratio = final_contact_prob.mean()
-        
-        # Binary Classification for duration/switches
-        is_contact = final_contact_prob >= 0.5
-        
-        # Diagnostics Trace (First 50 frames)
-        frame_trace = []
-        limit = min(50, len(clean_angle))
-        
-        # Safe extraction of aligned data for tracing
-        # We'll re-iterate or use index lookup
-        trace_indices = clean_angle.index[:limit]
-        
-        for idx in trace_indices:
-             current_angle = clean_angle.loc[idx]
-             current_yaw = clean_yaw.loc[idx]
-             g_prob = gaze_prob.loc[idx]
-             h_weight = head_weight.loc[idx]
-             f_prob = final_contact_prob.loc[idx]
-             is_c = is_contact.loc[idx]
+        if gaze_angles.empty or gaze_yaws is None:
+             return 0.0
              
-             frame_trace.append({
-                 "frame_idx": int(idx),
-                 "gaze_angle": round(float(current_angle), 2),
-                 "gaze_probability": round(float(g_prob), 4),
-                 "head_yaw": round(float(current_yaw), 2),
-                 "head_weight": round(float(h_weight), 4),
-                 "final_contact_probability": round(float(f_prob), 4),
-                 "binary_contact": bool(is_c),
-                 "logic_mode": "gaussian_fusion"
-             })
+        # 1. Define "Early Part"
+        limit = min(300, int(total_frames * 0.3))
+        if limit < 10: limit = total_frames # Fallback for short videos
+        
+        early_angles = gaze_angles.iloc[:limit]
+        early_yaws = gaze_yaws.iloc[:limit]
+        
+        # 2. Filter for Head Yaw near 0 (±10 degrees)
+        # This assumes the user is facing the screen (where the camera usually is)
+        valid_mask = (early_yaws.abs() < 10.0)
+        
+        valid_angles = early_angles[valid_mask]
+        
+        if len(valid_angles) < 5:
+             # Fallback: If strict yaw filter yields no data (e.g. head tracking failure -90),
+             # but we have gaze data, try to use median of all early gaze angles.
+             # This assumes the user spends most of the early video looking at the screen.
+             # We check if we have enough early data at all.
+             if len(early_angles) > 10:
+                  valid_angles = early_angles
+             else:
+                  return 0.0
              
-        contact_count = is_contact.sum()
-        # eye_contact_ratio is already taking mean probability above
-        # But wait, original code used `contact_count / total` for ratio.
-        # User requirement: "eye_contact_consistency = mean(final_contact_probability across frames)"
-        # So I stick with `final_contact_prob.mean()`.
+        # 3. Compute Median Gaze Angle
+        # User defined: "median(gaze_angle)"
+        offset = float(valid_angles.median())
         
-        duration_s = contact_count / self.fps # Accumulate duration of "binary contact" frames for "duration" metric?
-        # User said "BUT store raw probability for consistency computation."
-        # User didn't specify strict change for 'duration_s'. 
-        # Usually duration refers to time spent in contact. 
-        # I'll use binary contact count for duration to be physically interpretable.
+        # Safety Clamp (Don't correct more than 15 degrees)
+        offset = max(0.0, min(15.0, offset))
         
-        # 2. Confidence Calculation
+        return offset
 
-        # 2. Confidence Calculation
-        # Confidence is primarily data coverage. 
-        # We DO NOT based it on variance because steady off-camera gaze (low variance) 
-        # should not be "high confidence eye contact".
-        # But wait, "confidence" here is "confidence in the metric measurement", not "confidence of the person".
-        # If the person looks away steadily, we are CONFIDENT they are looking away.
-        # So low variance IS high confidence in the measurement.
-        # The user said: "Do NOT base consistency on signal variance." -> This refers to the SCORE, not confidence.
-        # The score is now purely ratio-based.
-        # But for 'visual_confidence' metric later, we want high reliability.
-        coverage = total / max(len(gaze_angles), 1)
-        
-        # We keep the signal confidence logic for the METRIC VALIDITY, but we ensure output score is low.
-        # Expected sigma for gaze = 0.3
-        signal_conf = self._calculate_signal_confidence(clean_angle, threshold=self.gaze_alignment_threshold_deg, expected_sigma=0.3)
-        
-        confidence = coverage * 0.5 + signal_conf * 0.5
-        confidence = min(1.0, max(0.0, confidence))
-
-        # 3. Direction State Detection & Switch Counting
-        # States: "camera", "left", "right"
-        # We need smoothing to avoid micro-jitter transitions
-        
-        # Smooth the yaw signal
-        smoothed_yaw = clean_yaw.rolling(window=5, center=True, min_periods=1).median()
-        smoothed_angle = clean_angle.rolling(window=5, center=True, min_periods=1).median()
-        
-        # Determine State per frame
-        # Camera: angle < threshold
-        # Left: angle >= threshold AND yaw > 0
-        # Right: angle >= threshold AND yaw < 0  (assuming standard signs)
-        
-        states = []
-        threshold = self.gaze_alignment_threshold_deg
-        
-        for i in range(len(smoothed_angle)):
-            ang = smoothed_angle.iloc[i]
-            yaw = smoothed_yaw.iloc[i]
-            
-            if ang < threshold:
-                states.append(0) # Camera
-            elif yaw > 0:
-                states.append(1) # Left (approx)
-            else:
-                states.append(-1) # Right (approx)
-                
-        # Count transitions between different states
-        state_series = pd.Series(states)
-        # Shift to find changes
-        switches = (state_series != state_series.shift()).sum() - 1 # -1 because first item compares to NaN/None
-        switches = max(0, int(switches))
-        
-        # 4. Max Continuous Duration (Sustained Attention)
-        # Identify contiguous blocks where angle < threshold
-        # is_contact is a boolean series
-        # We want the longest run of True
-        is_contact_int = is_contact.astype(int)
-        # Group by value change
-        groups = (is_contact_int != is_contact_int.shift()).cumsum()
-        # Filter for groups where value is 1 (True)
-        # Calculate size of each group
-        runs = is_contact_int.groupby(groups)
-        
-        max_duration_frames = 0
-        for g, frame_indices in runs.groups.items():
-             # Check if this group corresponds to "True" (contact)
-             # Get the value of the first index in the group
-             first_idx = frame_indices[0]
-             val = is_contact_int.loc[first_idx]
-             if val == 1:
-                  duration = len(frame_indices)
-                  if duration > max_duration_frames:
-                       max_duration_frames = duration
-                       
-        max_duration_s = max_duration_frames / self.fps
-                       
-        max_duration_s = max_duration_frames / self.fps
-        
-        # Diagnostics Summary
-        diagnostics = {
-             "frame_trace": frame_trace,
-             "summary": {
-                  "mean_gaze_probability": round(float(gaze_prob.mean()), 4),
-                  "mean_head_weight": round(float(head_weight.mean()), 4),
-                  "mean_final_probability": round(float(final_contact_prob.mean()), 4),
-                  "frames_above_0.5": int(is_contact.sum()),
-                  "logic_mode": "gaussian_fusion"
-             }
-        }
-                       
-        return eye_contact_ratio, duration_s, confidence, switches, max_duration_s, diagnostics
 
     # ==================================================================
     # PHASE 4 — Adaptive Expression Modeling
@@ -754,162 +605,109 @@ class TemporalFeatures:
             
         # Removed legacy metrics: posture_stability, posture_uprightness, overall_movement_intensity
 
-        # ── 2. Gaze Stability (from eye_distance_ratio) ──
-        if 'eye_distance_ratio' in pose_df.columns:
-            edr = pose_df['eye_distance_ratio'].dropna()
-            evidence = len(edr) / total_frames
-            if len(edr) >= 5:
-                # Center-Weighted Gaze Stability (v4.1)
-                # base_stability = 1 / (1 + std_angle)
-                # center_bias = 1 - (mean_angle / effective_threshold)
-                # center_bias = clamp(center_bias, 0, 1)
-                # gaze_stability = base_stability * center_bias
+        # ── 5. Gaze Analysis (Lean Iris-Only Pipeline v3 — 3-Band) ──
+        # center_distance = abs(ratio_x - 0.5)
+        # strong_contact = center_distance < 0.05
+        # soft_contact   = center_distance < 0.10
+        
+        if 'iris_ratio_x' in face_df.columns:
+            ratio_x = face_df['iris_ratio_x']
+            evidence = ratio_x.notna().sum() / max(total_frames, 1)
+
+            if evidence >= 0.1 and ratio_x.notna().sum() >= 5:
+                clean_ratio = ratio_x.dropna()
+                n = max(len(clean_ratio), 1)
                 
-                mean_angle = edr.abs().mean()
-                std_angle = edr.std()
+                # 1. Center Distance
+                center_distance = (clean_ratio - 0.5).abs()
                 
-                base_stability = 1.0 / (1.0 + std_angle)
+                # 2. 3-Band Contact Classification
+                strong_mask = (center_distance < 0.05)
+                soft_mask   = (center_distance < 0.10)
                 
-                # Use class threshold (6.0)
-                eff_threshold = self.gaze_alignment_threshold_deg
-                center_bias = 1.0 - (mean_angle / eff_threshold)
-                center_bias = max(0.0, min(1.0, center_bias))
+                ecr_strong = strong_mask.sum() / n
+                ecr_soft   = soft_mask.sum() / n
                 
-                val = base_stability * center_bias
+                # 3. Consistency = ECR_soft (primary metric)
+                consistency_val = ecr_soft
                 
-                # Confidence: Based on evidence ratio and signal stability
-                conf = evidence * 0.5 + base_stability * 0.5 # rudimentary conf
-                conf = min(1.0, max(0.0, conf))
+                # 4. Stability (Inverse Std of ratio_x — unchanged)
+                std_ratio = clean_ratio.std()
+                stability_val = 1.0 / (1.0 + std_ratio)
                 
-                results['gaze_stability'] = self._format_result(val, conf, evidence, "center_weighted_stability")
+                # 5. Switch Count (using soft_mask)
+                switches = (soft_mask.astype(int).diff().abs() > 0).sum()
                 
-                # Stable gaze duration (cumulative, rolling std <= threshold)
-                window = min(10, len(edr))
-                rolling_std = edr.rolling(window=window, center=True).std()
-                stable_frames = (rolling_std <= 0.05).sum()
-                stable_dur = stable_frames / self.fps
+                # 6. Max Continuous Duration (using soft_mask)
+                soft_frames = soft_mask.sum()
+                if soft_frames > 0:
+                    mask_int = soft_mask.astype(int)
+                    groups = (mask_int != mask_int.shift()).cumsum()
+                    run_lengths = mask_int.groupby(groups).sum()
+                    contact_runs = run_lengths[mask_int.groupby(groups).first() == 1]
+                    max_duration_frames = contact_runs.max() if not contact_runs.empty else 0
+                    max_dur_s = max_duration_frames / self.fps
+                else:
+                    max_dur_s = 0.0
+                
+                # Diagnostics
+                diag = {
+                    "ECR_strong": round(float(ecr_strong), 4),
+                    "ECR_soft": round(float(ecr_soft), 4),
+                    "strong_ratio": round(float(ecr_strong), 4),
+                    "soft_ratio": round(float(ecr_soft), 4),
+                    "mean_ratio_x": round(float(clean_ratio.mean()), 4),
+                    "std_ratio_x": round(float(std_ratio), 4),
+                    "mean_center_distance": round(float(center_distance.mean()), 4),
+                    "logic_mode": "iris_ratio_v3"
+                }
+
+                # Store Results
+                results['eye_contact_consistency'] = self._format_result(
+                    round(float(consistency_val), 4), evidence, evidence, "iris_ratio_3band"
+                )
+                results['eye_contact_consistency']['diagnostics'] = diag
+                
+                # Stability
+                results['gaze_stability'] = self._format_result(
+                    round(float(stability_val), 4), evidence, evidence, "inv_std_iris_ratio"
+                )
+                
+                # Switch Count
+                results['gaze_direction_switch_count'] = self._format_result(
+                    int(switches), evidence, evidence, "binary_switch_count"
+                )
+                
+                # Duration
+                results['max_continuous_eye_contact'] = self._format_result(
+                    round(float(max_dur_s), 2), evidence, evidence, "max_run_binary"
+                )
+                results['eye_contact_duration'] = results['max_continuous_eye_contact']
+                
+                # Stable Duration (rolling std of center_distance)
+                window = min(10, len(center_distance))
+                rolling_std = center_distance.rolling(window=window, center=True).std()
+                stable_frames_count = (rolling_std <= 0.05).sum()
+                stable_dur_s = stable_frames_count / self.fps
                 results['stable_gaze_duration'] = self._format_result(
-                    round(float(stable_dur), 2), conf, evidence, "rolling_std"
+                     round(float(stable_dur_s), 2), evidence, evidence, "rolling_std_iris_ratio"
                 )
+
             else:
-                results['gaze_stability'] = self._format_result(None, 0.0, evidence, "cv_stability", "insufficient_samples")
-                results['stable_gaze_duration'] = self._format_result(None, 0.0, evidence, "rolling_std", "insufficient_samples")
+                 # Insufficient Data
+                 results['eye_contact_consistency'] = self._format_result(0.0, 0.0, evidence, "insufficient_data")
+                 results['gaze_stability'] = self._format_result(0.0, 0.0, evidence, "insufficient_data")
+                 results['gaze_direction_switch_count'] = self._format_result(0, 0.0, evidence, "insufficient_data")
+                 results['max_continuous_eye_contact'] = self._format_result(0.0, 0.0, evidence, "insufficient_data")
+                 results['stable_gaze_duration'] = self._format_result(0.0, 0.0, evidence, "insufficient_data")
+
         else:
-            results['gaze_stability'] = self._format_result(None, 0.0, 0.0, "cv_stability", "missing_eye_landmarks")
-            results['stable_gaze_duration'] = self._format_result(None, 0.0, 0.0, "rolling_std", "missing_eye_landmarks")
-
-        # ── 3. Expression Metrics (Phase 4) ──
-        expr = self._compute_expression_metrics(face_df)
-        results.update(expr)
-
-        # ── 4. Blink Rate (Phase 2 — adaptive z-score) ──
-        has_left = 'left_eye_opening_ratio' in face_df.columns
-        has_right = 'right_eye_opening_ratio' in face_df.columns
-        if has_left and has_right:
-            left = face_df['left_eye_opening_ratio']
-            right = face_df['right_eye_opening_ratio']
-            avg_ear = ((left + right) / 2).dropna()
-            evidence = len(avg_ear) / max(total_frames, 1)
-
-            if evidence >= 0.1 and len(avg_ear) >= 5:
-                # Smooth EAR before detection
-                smoothed = self._smooth(avg_ear)
-                blink_count, blink_events, blink_conf = self._detect_blinks_zscore(smoothed)
-
-                duration_min = len(avg_ear) / self.fps / 60.0
-                if duration_min > 0:
-                    rate = blink_count / duration_min
-                    results['blink_rate'] = self._format_result(
-                        round(float(rate), 2), blink_conf, evidence, "adaptive_zscore"
-                    )
-                else:
-                    results['blink_rate'] = self._format_result(
-                        None, 0.0, evidence, "adaptive_zscore", "insufficient_duration"
-                    )
-            else:
-                results['blink_rate'] = self._format_result(
-                    None, 0.0, evidence, "adaptive_zscore", "insufficient_eye_data"
-                )
-        else:
-            results['blink_rate'] = self._format_result(
-                None, 0.0, 0.0, "adaptive_zscore", "missing_eye_landmarks"
-            )
-
-        # ── 5. Eye Contact (Phase 3 — gaze angle) ──
-        if 'gaze_alignment_angle' in face_df.columns:
-            gaze = face_df['gaze_alignment_angle']
-            evidence = gaze.notna().sum() / max(total_frames, 1)
-
-            if evidence >= 0.1 and gaze.notna().sum() >= 5:
-                # Get yaw if available, else None
-                gaze_yaw = face_df.get('gaze_yaw', None)
-                
-                # Get yaw if available, else None
-                gaze_yaw = face_df.get('gaze_yaw', None)
-                
-                score, cum_dur, conf, switches, max_dur, diag = self._compute_eye_contact(gaze, gaze_yaw)
-                results['eye_contact_consistency'] = self._format_result(
-                    round(float(score), 4), conf, evidence, "gaze_angle"
-                )
-                # Attach diagnostics to result metadata/details if supported, 
-                # or just ensure we unpacked it safely.
-                # User requested "safely ignore diagnostics if not needed".
-                # But we might want to store it in results['eye_contact_consistency']['diagnostics']?
-                # The _format_result returns a dict. We can extend it.
-                if isinstance(results['eye_contact_consistency'], dict):
-                     results['eye_contact_consistency']['diagnostics'] = diag
-                results['eye_contact_duration'] = self._format_result(
-                    round(float(cum_dur), 2), conf, evidence, "gaze_angle"
-                )
-                results['max_continuous_eye_contact'] = self._format_result(
-                    round(float(max_dur), 2), conf, evidence, "contiguous_segment"
-                )
-                results['gaze_direction_switch_count'] = self._format_result(
-                    int(switches), conf, evidence, "attention_shifts"
-                )
-                results['gaze_direction_switch_count'] = self._format_result(
-                    int(switches), conf, evidence, "attention_shifts"
-                )
-            else:
-                results['eye_contact_consistency'] = self._format_result(
-                    None, 0.0, evidence, "gaze_angle", "insufficient_gaze_data"
-                )
-                results['eye_contact_duration'] = self._format_result(
-                    None, 0.0, evidence, "gaze_angle", "insufficient_gaze_data"
-                )
-                results['max_continuous_eye_contact'] = self._format_result(
-                    None, 0.0, evidence, "contiguous_segment", "insufficient_gaze_data"
-                )
-                results['gaze_direction_switch_count'] = self._format_result(
-                    0, 0.0, evidence, "attention_shifts", "insufficient_data"
-                )
-        else:
-            # Fallback: use EAR stability if gaze angle not available
-            if has_left and has_right:
-                avg_ear = ((face_df['left_eye_opening_ratio'] + face_df['right_eye_opening_ratio']) / 2).dropna()
-                evidence = len(avg_ear) / max(total_frames, 1)
-                if len(avg_ear) >= 5:
-                    val, conf, reason = self._calculate_stability(avg_ear)
-                    results['eye_contact_consistency'] = self._format_result(
-                        val, conf, evidence, "ear_stability_fallback", reason
-                    )
-                else:
-                    results['eye_contact_consistency'] = self._format_result(
-                        None, 0.0, evidence, "ear_stability_fallback", "insufficient_samples"
-                    )
-            else:
-                results['eye_contact_consistency'] = self._format_result(
-                    None, 0.0, 0.0, "gaze_angle", "missing_eye_landmarks"
-                )
-                results['eye_contact_duration'] = self._format_result(
-                    None, 0.0, 0.0, "gaze_angle", "missing_gaze_data"
-                )
-                results['max_continuous_eye_contact'] = self._format_result(
-                    None, 0.0, 0.0, "contiguous_segment", "missing_data"
-                )
-                results['gaze_direction_switch_count'] = self._format_result(
-                    0, 0.0, 0.0, "attention_shifts", "missing_data"
-                )
+            # Fallback (No Iris Ratio Data)
+            results['eye_contact_consistency'] = self._format_result(None, 0.0, 0.0, "iris_ratio", "missing_iris_data")
+            results['gaze_stability'] = self._format_result(None, 0.0, 0.0, "iris_ratio", "missing_iris_data")
+            results['gaze_direction_switch_count'] = self._format_result(0, 0.0, 0.0, "attention_shifts", "missing_iris_data")
+            results['max_continuous_eye_contact'] = self._format_result(0.0, 0.0, 0.0, "contiguous_segment", "missing_iris_data")
+            results['stable_gaze_duration'] = self._format_result(0.0, 0.0, 0.0, "rolling_std_iris_ratio", "missing_iris_data")
 
         # ── 6. Overall Movement (Redesign v2.1) ──
         # Normalized velocity of shoulder midpoint
@@ -1063,7 +861,7 @@ class TemporalFeatures:
         pose_completeness = sum(1 for f in pose_features if f in pose_df.columns) / len(pose_features)
 
         face_features = ['left_eye_opening_ratio', 'right_eye_opening_ratio', 'mouth_opening_ratio',
-                         'smile_intensity', 'gaze_alignment_angle', 'eyebrow_raise_ratio']
+                         'smile_intensity', 'iris_ratio_x', 'eyebrow_raise_ratio']
         face_completeness = sum(1 for f in face_features if f in face_df.columns) / len(face_features)
 
         return pose_completeness * 0.5 + face_completeness * 0.5
@@ -1119,19 +917,19 @@ class TemporalFeatures:
                     below = (z < self.blink_z_threshold).sum()
                     print(f"  frames below z={self.blink_z_threshold}: {below} / {len(z)}")
 
-        # --- Gaze angle distribution ---
-        if 'gaze_alignment_angle' in face_df.columns and len(face_df) > 0:
-            gaze = face_df['gaze_alignment_angle'].dropna()
-            if len(gaze) > 0:
-                print(f"\n--- GAZE ANGLE DISTRIBUTION ---")
-                print(f"  count:   {len(gaze)}")
-                print(f"  min:     {gaze.min():.2f}°")
-                print(f"  median:  {gaze.median():.2f}°")
-                print(f"  mean:    {gaze.mean():.2f}°")
-                print(f"  max:     {gaze.max():.2f}°")
-                print(f"  std:     {gaze.std():.2f}°")
-                aligned = (gaze < self.gaze_alignment_threshold_deg).sum()
-                print(f"  frames < {self.gaze_alignment_threshold_deg}°: {aligned} / {len(gaze)} ({aligned/len(gaze)*100:.1f}%)")
+        # --- Iris ratio distribution ---
+        if 'iris_ratio_x' in face_df.columns and len(face_df) > 0:
+            ratio_x = face_df['iris_ratio_x'].dropna()
+            if len(ratio_x) > 0:
+                print(f"\n--- IRIS RATIO_X DISTRIBUTION ---")
+                print(f"  count:   {len(ratio_x)}")
+                print(f"  min:     {ratio_x.min():.4f}")
+                print(f"  median:  {ratio_x.median():.4f}")
+                print(f"  mean:    {ratio_x.mean():.4f}")
+                print(f"  max:     {ratio_x.max():.4f}")
+                print(f"  std:     {ratio_x.std():.4f}")
+                centered = ((ratio_x - 0.5).abs() < 0.18).sum()
+                print(f"  frames centered (<0.18): {centered} / {len(ratio_x)} ({centered/len(ratio_x)*100:.1f}%)")
 
         # --- Smile intensity distribution ---
         if 'smile_intensity' in face_df.columns and len(face_df) > 0:

@@ -7,9 +7,16 @@ from typing import Dict, List, Optional, Tuple, Union
 # Frozen Posture Engine Version
 POSTURE_ENGINE_VERSION = "v2.2_frozen_calibrated"
 
+# ─── Response Layer Control ───────────────────────────────────────────────────
+# Set DEBUG_MODE = True to return the full internal JSON (for dev/testing).
+# Set DEBUG_MODE = False (default) to return the slim production-safe response.
+DEBUG_MODE = False
+# ──────────────────────────────────────────────────────────────────────────────
+
 import traceback
 from features.normalized_geometry import NormalizedGeometry
 from features.temporal_features import TemporalFeatures
+from features.stt_engine import transcribe_audio
 from features.audio_analysis import AudioAnalyzer
 from features.speech_metrics import SpeechMetrics
 from features.linguistic_analysis import LinguisticAnalyzer
@@ -137,6 +144,46 @@ def analyze_video(video_path: str, transcript: str = None, debug_mode: bool = Fa
         # Let's assume it uses audio processing results or transcript.
         # Just creating a placeholder structure if not fully implemented in snippet.
         speech_results = {}
+        # -------------------------------------------------------------------------
+        # SPEECH PIPELINE v3 (Production)
+        # -------------------------------------------------------------------------
+        
+        # 1. Transcription & Segmentation (Local Whisper)
+        # Always attempt local transcription to get Segments for pause analysis
+        stt_result = transcribe_audio(video_path)
+        
+        if stt_result and stt_result.get("text"):
+             # If Whisper succeeded, prefer its text and segments
+             transcript = stt_result.get("text", "")
+             segments = stt_result.get("segments", [])
+        else:
+             # Fallback to existing transcript (if any) or empty
+             # Segments empty -> no pause analysis
+             segments = []
+
+        # 2. Pause Analysis (from Segments)
+        pause_count = 0
+        long_pauses = 0
+        total_pause_duration = 0.0
+        last_end = 0.0
+        
+        for seg in segments:
+            start = seg['start']
+            gap = start - last_end
+            
+            if gap > 0.6: # Gap > 0.6s is a pause
+                pause_count += 1
+                total_pause_duration += gap
+                if gap > 1.5:
+                    long_pauses += 1
+            
+            last_end = seg['end']
+            
+        duration_min = max(duration_seconds / 60.0, 0.001)
+        pause_rate_per_min = pause_count / duration_min
+        long_pause_ratio = long_pauses / max(pause_count, 1)
+
+        # 3. Speech Metrics Calculation
         if transcript:
             # Strict Call: finalize
             speech_results = speech_metrics.finalize(transcript, duration_seconds)
@@ -196,11 +243,101 @@ def analyze_video(video_path: str, transcript: str = None, debug_mode: bool = Fa
         engagement_score = (eye_contact * 4.0) + (gaze_stab * 3.0) + (smile * 3.0)
         
         # 7.3 Speech Delivery Score (Communication)
-        # Driven by wpm (pace), filler words, pitch variety
-        # Default fallback
-        speech_delivery_score = 5.0
-        # If we had real metrics:
-        # speech_delivery_score = ...
+        # Driven by wpm (pace), filler words, pitch variety (Deterministic v3)
+        
+        # Extract Metrics
+        wpm = speech_results.get('words_per_minute', 0.0) if speech_results else 0.0
+        filler_rate = speech_results.get('filler_rate_per_min', 0.0) if speech_results else 0.0
+        
+        # Audio Metrics
+        audio_rel = 0.0
+        pitch_std = 0.0
+        energy_var = 0.0
+        
+        if audio_results:
+             audio_rel = audio_results.get('reliability_score', 0.0)
+             audio_metrics = audio_results.get('metrics', {})
+             pitch_std = audio_metrics.get('pitch_std_hz', 0.0)
+             energy_var = audio_metrics.get('energy_variability_score', 0.0)
+
+        # -------------------------------------------------------------------------
+        # DETERMINISTIC SCORING v3
+        # -------------------------------------------------------------------------
+
+        # WPM Scoring (v3.1)
+        if wpm < 90: wpm_score = 4
+        elif wpm <= 170: wpm_score = 9
+        elif wpm <= 190: wpm_score = 7
+        else: wpm_score = 4
+        
+        # Filler Scoring
+        if filler_rate == 0: filler_score = 9
+        elif filler_rate <= 3: filler_score = 7
+        elif filler_rate <= 6: filler_score = 5
+        else: filler_score = 3
+        
+        # Pause Scoring
+        if pause_rate_per_min <= 2: pause_score = 8
+        elif pause_rate_per_min <= 5: pause_score = 6
+        else: pause_score = 4
+        
+        # Pitch Scoring (Variability)
+        if pitch_std < 15: pitch_score = 4
+        elif pitch_std < 30: pitch_score = 6
+        elif pitch_std < 50: pitch_score = 8
+        else: pitch_score = 9
+        
+        # Energy Scoring
+        if energy_var < 5: energy_score = 4
+        elif energy_var < 15: energy_score = 6
+        elif energy_var < 30: energy_score = 8
+        else: energy_score = 9
+        
+        # Final Weighted Score (v3.1)
+        # 0.30 WPM + 0.20 Pause + 0.20 Filler + 0.20 Pitch + 0.10 Energy
+        raw_score = (
+            (0.30 * wpm_score) +
+            (0.20 * pause_score) +
+            (0.20 * filler_score) +
+            (0.20 * pitch_score) +
+            (0.10 * energy_score)
+        )
+        
+        speech_delivery_score = float(round(min(10.0, max(0.0, raw_score)), 1))
+        
+        # Reliability Gate
+        speech_logic_mode = "speech_v3_1_calibrated"
+        
+        if audio_rel < 0.25:
+            speech_delivery_score = float(round(speech_delivery_score * audio_rel, 1)) # Dampen score
+            speech_logic_mode = "speech_v3_low_reliability"
+            
+        # Inject Metrics for Diagnostics
+        if speech_results is not None:
+            speech_results['rate_score'] = wpm_score
+            speech_results['filler_score'] = filler_score
+            speech_results['pause_score'] = pause_score
+            speech_results['pitch_score'] = pitch_score
+            speech_results['energy_score'] = energy_score
+            speech_results['speech_logic_mode'] = speech_logic_mode
+            speech_results['pause_rate_per_min'] = round(pause_rate_per_min, 1)
+            speech_results['long_pause_ratio'] = round(long_pause_ratio, 2)
+            # Note: speech_results is assumed to be a valid dict here if transcript existed
+            # If transcript was empty, speech_results is {} empty dict from fallback initialization?
+            # Wait, my logic above: "if transcript: speech_results = ..."
+            # Initialize speech_results if not present!
+        
+        if 'speech_results' not in locals() or speech_results is None:
+             speech_results = {
+                'rate_score': wpm_score,
+                'filler_score': filler_score,
+                'pause_score': pause_score,
+                'pitch_score': pitch_score,
+                'energy_score': energy_score,
+                'speech_logic_mode': speech_logic_mode,
+                'pause_rate_per_min': round(pause_rate_per_min, 1),
+                'long_pause_ratio': round(long_pause_ratio, 2)
+             }
         
         # 7.4 Professionalism Score
         # Combination of all + confidence + linguistic quality
@@ -400,12 +537,111 @@ def analyze_video(video_path: str, transcript: str = None, debug_mode: bool = Fa
             "results": results
         }
         
-        return response
+        if DEBUG_MODE:
+            return response
+        else:
+            return build_public_response(response)
 
     except Exception as e:
         logger.error(f"Analysis Failed: {str(e)}")
         logger.error(traceback.format_exc())
         raise e
+
+def build_public_response(full_response: dict) -> dict:
+    """
+    Slim production-safe response builder.
+    Extracts only frontend-relevant fields from the full internal JSON.
+    All internal computation still runs — only the output shape is changed.
+    """
+    results = full_response.get("results", {})
+    ma = results.get("multimodal_analysis", {})
+
+    # ── Engagement ──────────────────────────────────────────────────────────
+    eng = ma.get("engagement_analysis", {})
+    eng_metrics = eng.get("metrics", {})
+    # max_continuous_eye_contact lives in the raw temporal_results blob stored
+    # inside posture_analysis.metrics (temporal_results is mapped there).
+    posture_metrics = ma.get("posture_analysis", {}).get("metrics", {})
+    max_cont = posture_metrics.get("max_continuous_eye_contact", {}).get("value")
+    if max_cont is None:
+        max_cont = 0.0
+
+    # ── Speech ──────────────────────────────────────────────────────────────
+    speech = ma.get("speech_analysis", {})
+    speech_metrics_dict = speech.get("metrics") or {}
+    wpm_val = speech_metrics_dict.get("words_per_minute", 0.0)
+    # WPM category
+    if wpm_val == 0:
+        rate_cat = "not_detected"
+    elif wpm_val < 90:
+        rate_cat = "slow"
+    elif wpm_val <= 170:
+        rate_cat = "ideal"
+    elif wpm_val <= 190:
+        rate_cat = "fast"
+    else:
+        rate_cat = "very_fast"
+
+    # ── Qualitative / Audio ──────────────────────────────────────────────────
+    audio_feat = speech.get("audio_features") or {}
+    audio_metrics_inner = audio_feat.get("metrics") or {}
+    pitch_mean = audio_metrics_inner.get("pitch_mean_hz", 0.0)
+    # Tone quality from pitch mean
+    if pitch_mean == 0:
+        tone_quality = "not_detected"
+    elif pitch_mean < 150:
+        tone_quality = "deep"
+    elif pitch_mean < 230:
+        tone_quality = "medium"
+    else:
+        tone_quality = "high"
+    # Voice quality from reliability
+    audio_rel = audio_feat.get("reliability_score", 0.0)
+    if audio_rel >= 0.7:
+        voice_quality_feedback = "Clear and confident vocal delivery."
+    elif audio_rel >= 0.4:
+        voice_quality_feedback = "Moderately clear vocal delivery."
+    else:
+        voice_quality_feedback = "Weak or inconsistent vocal delivery."
+
+    # ── Transcript ──────────────────────────────────────────────────────────
+    ling = ma.get("linguistic_analysis") or {}
+    transcript_text = ling.get("transcript", "")
+    language_code = ling.get("language", "en")
+    # Fallback: check top-level results transcript field
+    if not transcript_text:
+        transcript_text = results.get("transcript", "") or ""
+
+    return {
+        "analysis_version": full_response.get("analysis_version", ""),
+        "posture_score": results.get("summary_view", {}).get("posture_score", 0.0),
+        "engagement": {
+            "score": round(eng.get("score", 0.0), 1),
+            "interpretation": eng.get("interpretation", ""),
+            "eye_contact_ratio": round(float(eng_metrics.get("eye_contact") or 0.0), 3),
+            "gaze_stability": round(float(eng_metrics.get("gaze_stability") or 0.0), 3),
+            "max_continuous_eye_contact": round(float(max_cont), 2)
+        },
+        "speech": {
+            "score": round(speech.get("score", 0.0), 1),
+            "words_per_minute": round(float(wpm_val), 1),
+            "speaking_rate_category": rate_cat,
+            "filler_rate_per_min": round(float(speech_metrics_dict.get("filler_rate_per_min", 0.0)), 2),
+            "pitch_score": speech_metrics_dict.get("pitch_score", 0),
+            "pause_score": speech_metrics_dict.get("pause_score", 0)
+        },
+        "professionalism_score": results.get("professionalism_score", 0.0),
+        "overall_confidence": results.get("overall_confidence", 0.0),
+        "qualitative_feedback": {
+            "tone_quality": tone_quality,
+            "voice_quality_feedback": voice_quality_feedback
+        },
+        "transcript": {
+            "text": transcript_text,
+            "language_code": language_code
+        }
+    }
+
 
 def _generate_deterministic_posture_summary(alignment, stability, motion) -> str:
     """

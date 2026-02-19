@@ -59,7 +59,7 @@ class NormalizedGeometry:
         # Initialize MediaPipe Holistic here to encapsulate it
         self.holistic = mp_holistic.Holistic(
             static_image_mode=False,
-            model_complexity=1,
+            model_complexity=0,
             smooth_landmarks=True,
             enable_segmentation=False,
             refine_face_landmarks=True,  # Critical for iris/gaze
@@ -354,6 +354,45 @@ class NormalizedGeometry:
         }
 
     # ------------------------------------------------------------------
+    # Lean Iris-Only Gaze Ratio (v2 — no head pose fusion)
+    # ------------------------------------------------------------------
+    def compute_iris_ratio(self, face_landmarks) -> Optional[float]:
+        """
+        Compute horizontal iris position as a ratio within the eye.
+
+        Uses averaged iris landmarks (468-472 left, 473-477 right).
+        Returns: float in [0, 1] where 0.5 = centered (looking at camera).
+                 None if iris landmarks unavailable.
+        """
+        n_lm = len(face_landmarks.landmark)
+        if n_lm < 478:
+            return None
+
+        def _eye_ratio_x(iris_indices, outer_idx, inner_idx):
+            """Horizontal iris center position as fraction of eye width."""
+            # Average iris landmark positions
+            iris_x = sum(face_landmarks.landmark[i].x for i in iris_indices) / len(iris_indices)
+            outer_x = face_landmarks.landmark[outer_idx].x
+            inner_x = face_landmarks.landmark[inner_idx].x
+            eye_width = abs(inner_x - outer_x)
+            if eye_width < 1e-8:
+                return None
+            ratio = (iris_x - outer_x) / (inner_x - outer_x)
+            return ratio
+
+        left_ratio = _eye_ratio_x([468, 469, 470, 471, 472], 33, 133)
+        right_ratio = _eye_ratio_x([473, 474, 475, 476, 477], 362, 263)
+
+        if left_ratio is None and right_ratio is None:
+            return None
+        elif left_ratio is None:
+            return right_ratio
+        elif right_ratio is None:
+            return left_ratio
+        else:
+            return (left_ratio + right_ratio) / 2.0
+
+    # ------------------------------------------------------------------
     # Pose Features (unchanged core, preserved for backward compat)
     # ------------------------------------------------------------------
     def extract_pose_features(self, pose_landmarks) -> Dict[str, float]:
@@ -556,10 +595,14 @@ class NormalizedGeometry:
             features['head_pitch'] = head_pose[1]
             features['head_roll'] = head_pose[2]
 
-        # ---- 3. Gaze Alignment and Direction ----
+        # ---- 3. Iris-Based Gaze Ratio (Lean Pipeline v2) ----
+        iris_ratio = self.compute_iris_ratio(face_landmarks)
+        if iris_ratio is not None:
+            features['iris_ratio_x'] = iris_ratio
+
+        # ---- 3b. Legacy Gaze (retained for head_pose_metrics / posture) ----
         gaze_data = self._estimate_gaze(face_landmarks)
         if gaze_data is not None:
-            features['gaze_alignment_angle'] = gaze_data['gaze_angle']
             features['gaze_yaw'] = gaze_data['gaze_yaw']
             features['gaze_pitch'] = gaze_data['gaze_pitch']
 
@@ -625,6 +668,30 @@ class NormalizedGeometry:
             features['jaw_opening_ratio'] = jaw_dist / face_height
         else:
             features['jaw_opening_ratio'] = 0.0
+
+        # ---- 8. Expression Landmark Ratios (Geometric Expression v1) ----
+        # face_width = distance(outer left eye 33, outer right eye 263)
+        lm33 = {'x': face_landmarks.landmark[33].x, 'y': face_landmarks.landmark[33].y}
+        lm263 = {'x': face_landmarks.landmark[263].x, 'y': face_landmarks.landmark[263].y}
+        face_width = self._calculate_distance_2d(lm33, lm263)
+
+        if face_width > 1e-8:
+            # mouth_width = distance(61, 291)
+            mouth_width = self._calculate_distance_2d(mouth_left, mouth_right)
+            features['expr_smile_ratio'] = mouth_width / face_width
+
+            # brow_distance = distance(70, 300) / face_width
+            brow_dist = self._calculate_distance_2d(left_eyebrow, right_eyebrow)
+            features['expr_brow_distance'] = brow_dist / face_width
+
+            # eye_openness_left = distance(159, 145) / face_width
+            lm159 = {'x': face_landmarks.landmark[159].x, 'y': face_landmarks.landmark[159].y}
+            lm145 = {'x': face_landmarks.landmark[145].x, 'y': face_landmarks.landmark[145].y}
+            lm386 = {'x': face_landmarks.landmark[386].x, 'y': face_landmarks.landmark[386].y}
+            lm374 = {'x': face_landmarks.landmark[374].x, 'y': face_landmarks.landmark[374].y}
+            eye_left = self._calculate_distance_2d(lm159, lm145)
+            eye_right = self._calculate_distance_2d(lm386, lm374)
+            features['expr_eye_openness'] = ((eye_left + eye_right) / 2.0) / face_width
         
         return features
 
