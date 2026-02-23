@@ -10,7 +10,7 @@ Your video had **6,359 frames** but only **80 frames (1.3%)** were processed suc
 3. **MediaPipe struggling** - Poor video quality or difficult angles
 4. **No performance limits** - Processing entire video regardless of length
 
----
+--------------
 
 ## 🔧 **OPTIMIZATIONS IMPLEMENTED**
 

@@ -549,44 +549,85 @@ def analyze_video(video_path: str, transcript: str = None, debug_mode: bool = Fa
 
 def build_public_response(full_response: dict) -> dict:
     """
-    Slim production-safe response builder.
-    Extracts only frontend-relevant fields from the full internal JSON.
-    All internal computation still runs — only the output shape is changed.
+    Standard production response builder — v2 (Standard Structure).
+    Output shape: body / speech_score / speech_analysis / final_score
+    All internal computation still runs — only output shape is changed.
     """
     results = full_response.get("results", {})
     ma = results.get("multimodal_analysis", {})
+    sv = results.get("summary_view", {})
 
-    # ── Engagement ──────────────────────────────────────────────────────────
+    # ── Scaling helpers (response layer only, no internal values changed) ──────
+    def scale_10_to_100(x): return round(float(x) * 10.0, 1)
+    def scale_1_to_100(x):  return round(float(x) * 100.0, 1)
+
+    # ── Posture ──────────────────────────────────────────────────────────────
+    posture_raw = float(sv.get("posture_score", 0.0))
+    posture_norm = scale_10_to_100(posture_raw)
+
+    # ── Engagement / Eye ──────────────────────────────────────────────────────
     eng = ma.get("engagement_analysis", {})
     eng_metrics = eng.get("metrics", {})
-    # max_continuous_eye_contact lives in the raw temporal_results blob stored
-    # inside posture_analysis.metrics (temporal_results is mapped there).
-    posture_metrics = ma.get("posture_analysis", {}).get("metrics", {})
-    max_cont = posture_metrics.get("max_continuous_eye_contact", {}).get("value")
-    if max_cont is None:
-        max_cont = 0.0
+    engagement_raw = float(eng.get("score", 0.0))
+    engagement_norm = scale_10_to_100(engagement_raw)
+    engagement_interp = eng.get("interpretation", "")
 
-    # ── Speech ──────────────────────────────────────────────────────────────
+    # ECR (0–1 → 0–100) and OSI = Ocular Stability Index (0–1 → 0–100)
+    ecr_raw = float(eng_metrics.get("eye_contact") or 0.0)
+    osi_raw = float(eng_metrics.get("gaze_stability") or 0.0)
+    ecr_norm = scale_1_to_100(ecr_raw)
+    osi_norm = scale_1_to_100(osi_raw)
+
+    # ── Expression ────────────────────────────────────────────────────────────
+    posture_metrics = ma.get("posture_analysis", {}).get("metrics", {})
+    expr_data = posture_metrics.get("expression_dynamics", {})
+    expression_raw = None
+    if isinstance(expr_data, dict):
+        expression_raw = expr_data.get("value")
+    # Scale 0–1 → 0–100; treat None as 0 for weighted formula only
+    expression_norm = scale_1_to_100(expression_raw) if expression_raw is not None else None
+    expression_for_formula = float(expression_raw) * 100.0 if expression_raw is not None else 0.0
+
+    # ── body_total: industry-standard weighted linear aggregation (0–100) ──────
+    # posture 30% + engagement 30% + ECR 20% + OSI 10% + expression 10%
+    body_total = round(
+        (0.30 * posture_norm) +
+        (0.30 * engagement_norm) +
+        (0.20 * ecr_norm) +
+        (0.10 * osi_norm) +
+        (0.10 * expression_for_formula),
+        1
+    )
+    body_total = max(0.0, min(100.0, body_total))  # clamp [0, 100]
+
+    # ── Body interpretation: merged posture + engagement text ─────────────────
+    posture_analysis = ma.get("posture_analysis", {})
+    posture_interp = posture_analysis.get("interpretation", "")
+    if posture_interp and engagement_interp:
+        body_interpretation = f"{posture_interp} {engagement_interp}"
+    else:
+        body_interpretation = posture_interp or engagement_interp or ""
+
+
+    # ── Speech ────────────────────────────────────────────────────────────
     speech = ma.get("speech_analysis", {})
     speech_metrics_dict = speech.get("metrics") or {}
-    wpm_val = speech_metrics_dict.get("words_per_minute", 0.0)
-    # WPM category
-    if wpm_val == 0:
-        rate_cat = "not_detected"
-    elif wpm_val < 90:
-        rate_cat = "slow"
-    elif wpm_val <= 170:
-        rate_cat = "ideal"
-    elif wpm_val <= 190:
-        rate_cat = "fast"
-    else:
-        rate_cat = "very_fast"
+    speech_raw = float(speech.get("score", 0.0))          # internal 0-10
+    speech_total_norm = scale_10_to_100(speech_raw)        # 0-100 for output
 
-    # ── Qualitative / Audio ──────────────────────────────────────────────────
+    wpm_val = float(speech_metrics_dict.get("words_per_minute", 0.0))
+    filler_rate = float(speech_metrics_dict.get("filler_rate_per_min", 0.0))
+    pause_rate = float(speech_metrics_dict.get("pause_rate_per_min", 0.0))
+
+    # ── Audio / Voice ──────────────────────────────────────────────────────
     audio_feat = speech.get("audio_features") or {}
     audio_metrics_inner = audio_feat.get("metrics") or {}
-    pitch_mean = audio_metrics_inner.get("pitch_mean_hz", 0.0)
-    # Tone quality from pitch mean
+    audio_rel = float(audio_feat.get("reliability_score", 0.0))
+
+    pitch_mean = float(audio_metrics_inner.get("pitch_mean_hz", 0.0))
+    energy_variability = float(audio_metrics_inner.get("energy_variability_score", 0.0))
+
+    # Tone quality from pitch mean Hz
     if pitch_mean == 0:
         tone_quality = "not_detected"
     elif pitch_mean < 150:
@@ -595,47 +636,76 @@ def build_public_response(full_response: dict) -> dict:
         tone_quality = "medium"
     else:
         tone_quality = "high"
-    # Voice quality from reliability
-    audio_rel = audio_feat.get("reliability_score", 0.0)
-    if audio_rel >= 0.7:
-        voice_quality_feedback = "Clear and confident vocal delivery."
-    elif audio_rel >= 0.4:
-        voice_quality_feedback = "Moderately clear vocal delivery."
-    else:
-        voice_quality_feedback = "Weak or inconsistent vocal delivery."
 
-    # ── Transcript ──────────────────────────────────────────────────────────
+    # Voice quality: audio reliability (0-1) → 0-100
+    voice_quality_norm = scale_1_to_100(min(1.0, audio_rel))
+
+    # Energy level: energy_variability (0-∞) capped at 0.50 reference → 0-100
+    energy_level_norm = round(min(100.0, (energy_variability / 0.50) * 100.0), 1)
+
+    # ── Professionalism & Confidence ──────────────────────────────────────────
+    professionalism_raw  = float(results.get("professionalism_score", 0.0))  # 0-10
+    communication_raw    = float(results.get("communication_score", speech_raw))  # 0-10
+    confidence_raw       = float(results.get("overall_confidence", 0.0))     # 0-1
+
+    professionalism_norm = scale_10_to_100(professionalism_raw)   # 0-100
+    communication_norm   = scale_10_to_100(communication_raw)     # 0-100
+    confidence_norm      = scale_1_to_100(min(1.0, confidence_raw))  # 0-100
+
+    # ── Final Score (all inputs are now 0-100) ──────────────────────────────
+    # body 40% + speech 40% + confidence 20% — all 0-100
+    final_score = round(
+        (body_total           * 0.40) +
+        (speech_total_norm    * 0.40) +
+        (confidence_norm      * 0.20),
+        1
+    )
+    final_score = max(0.0, min(100.0, final_score))  # clamp [0, 100]
+
+    # ── Transcript ────────────────────────────────────────────────────────────
     ling = ma.get("linguistic_analysis") or {}
-    transcript_text = ling.get("transcript", "")
+    transcript_text = ling.get("transcript", "") or results.get("transcript", "") or ""
     language_code = ling.get("language", "en")
-    # Fallback: check top-level results transcript field
-    if not transcript_text:
-        transcript_text = results.get("transcript", "") or ""
+
+    # ── Analysis Summary ──────────────────────────────────────────────────────
+    # Construct a concise composite summary
+    pace_label = "ideal pace" if 90 <= wpm_val <= 170 else ("slow pace" if wpm_val < 90 else "fast pace")
+    filler_label = "minimal fillers" if filler_rate <= 3 else "frequent fillers"
+    analysis_summary = (
+        f"{body_interpretation} "
+        f"Speech delivered at {pace_label} ({round(wpm_val, 0):.0f} WPM) with {filler_label}."
+    ).strip()
 
     return {
         "analysis_version": full_response.get("analysis_version", ""),
-        "posture_score": results.get("summary_view", {}).get("posture_score", 0.0),
-        "engagement": {
-            "score": round(eng.get("score", 0.0), 1),
-            "interpretation": eng.get("interpretation", ""),
-            "eye_contact_ratio": round(float(eng_metrics.get("eye_contact") or 0.0), 3),
-            "gaze_stability": round(float(eng_metrics.get("gaze_stability") or 0.0), 3),
-            "max_continuous_eye_contact": round(float(max_cont), 2)
+        "body": {
+            "posture_score": posture_norm,
+            "engagement_score": engagement_norm,
+            "eye_contact_ratio": ecr_norm,
+            "ocular_stability_index": osi_norm,
+            "expression_score": expression_norm,  # null if expression not detected
+            "body_total": body_total,
+            "interpretation": body_interpretation
         },
-        "speech": {
-            "score": round(speech.get("score", 0.0), 1),
-            "words_per_minute": round(float(wpm_val), 1),
-            "speaking_rate_category": rate_cat,
-            "filler_rate_per_min": round(float(speech_metrics_dict.get("filler_rate_per_min", 0.0)), 2),
-            "pitch_score": speech_metrics_dict.get("pitch_score", 0),
-            "pause_score": speech_metrics_dict.get("pause_score", 0)
+        "speech_score": {
+            "professionalism": professionalism_norm,
+            "communication": communication_norm,
+            "confidence": confidence_norm,
+            "voice_quality": voice_quality_norm,
+            "speech_total": speech_total_norm
         },
-        "professionalism_score": results.get("professionalism_score", 0.0),
-        "overall_confidence": results.get("overall_confidence", 0.0),
-        "qualitative_feedback": {
+        "speech_analysis": {
+            "sentiment": None,          # not implemented — placeholder
             "tone_quality": tone_quality,
-            "voice_quality_feedback": voice_quality_feedback
+            "sarcasm_detected": None,   # not implemented — placeholder
+            "pace_wpm": round(wpm_val, 1),
+            "clarity_score": None,      # not implemented — placeholder
+            "energy_level": energy_level_norm,
+            "filler_rate": round(filler_rate, 2),
+            "pause_rate": round(pause_rate, 2),
+            "analysis_summary": analysis_summary
         },
+        "final_score": final_score,
         "transcript": {
             "text": transcript_text,
             "language_code": language_code

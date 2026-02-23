@@ -25,7 +25,7 @@ This ensures you use the correct Python dependencies.
 
 ### **4. Start the Server**
 ```bash
-python main.py
+uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 *(Keep this terminal open! It runs the backend server at `http://127.0.0.1:8000`)*
 
