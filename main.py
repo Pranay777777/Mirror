@@ -56,7 +56,7 @@ async def start_analysis(file: UploadFile = File(...), debug_mode: bool = None):
              logger.warning(f"Audio processing failed: {e}")
 
         # 2. Multimodal Body Language Analysis (Video + Audio + Text)
-        body_data = analyze_video(video_path, transcript=transcript_text, debug_mode=debug_mode)
+        result = analyze_video(video_path, transcript=transcript_text, debug_mode=debug_mode)
 
         # 3. Tone & Quality Scoring (OpenAI with structured output)
         audio_scores = {}
@@ -67,53 +67,67 @@ async def start_analysis(file: UploadFile = File(...), debug_mode: bool = None):
             except Exception as e:
                 logger.warning(f"OpenAI scoring failed: {e}")
 
-        # Final JSON Response Body - Scientifically Defensible Format
-        # Task 4: Clean JSON Structure
-        
-        # Check if analyze_video returned the new structured response
-        if "results" in body_data and "multimodal_analysis" in body_data["results"]:
-             # Inject the external scoring and transcript into the results
-             body_data["results"]["qualitative_feedback"] = audio_scores
-             body_data["results"]["transcript"] = transcript_text
-             
-             # Ensure summary_view is present (it should be)
-             if "summary_view" not in body_data["results"]:
-                 body_data["results"]["summary_view"] = {}
-                 
-             # Wrappers
-             return {
-                 "status": "success",
-                 "filename": original_name,
-                 "analysis_version": body_data.get("analysis_version", "v2.1_stabilized"),
-                 "results": body_data["results"],
-                 "metadata": {
-                     "processing_method": "camera_invariant_geometry",
-                     "temporal_analysis": True,
-                     "confidence_estimation": True
-                 }
-             }
-        else:
-            # LEGACY PATH: If analyze_video returns flat dict (shouldn't happen with new code, but safe fallback)
-            summary_view = body_data.pop('summary_view', None)
-            if summary_view is None:
-                 summary_view = {} 
-            
-            return {
-                "status": "success",
-                "filename": original_name,
-                "analysis_version": "v2.1_stabilized",
-                "results": {
-                    "summary_view": summary_view,
-                    "multimodal_analysis": body_data,
-                    "qualitative_feedback": audio_scores,
-                    "transcript": transcript_text
-                },
-                "metadata": {
-                    "processing_method": "camera_invariant_geometry",
-                    "temporal_analysis": True,
-                    "confidence_estimation": True
-                }
-            }
+        print("API MODULE PATH:", __file__)
+        print("API analysis_version:", result.get("analysis_version"))
+        print("API engagement_score:", result.get("body", {}).get("engagement_score"))
+        print("API speech_activity_flag:", result.get("speech_activity_flag"))
+        print("API gaze_metrics_available:", result.get("gaze_metrics_available"))
+
+        if audio_scores:
+            # Remove internal scoring sub-fields not intended for public output
+            audio_scores.pop("scores", None)
+            audio_scores.pop("confidence", None)
+
+            # ── Build qualitative summary from available fields ───────────────
+            sa  = audio_scores.get("speech_analysis", {})
+            tm  = audio_scores.get("technical_metrics", {})
+            sentiment    = sa.get("sentiment", "neutral")
+            tone         = sa.get("tone_quality", "neutral")
+            pace         = tm.get("pace", "balanced")
+            clarity      = tm.get("clarity_score", 5.0)
+            energy       = tm.get("energy_level", "moderate")
+            fillers      = tm.get("filler_usage", "moderate")
+
+            clarity_desc = (
+                "excellent clarity" if float(clarity) >= 8
+                else "good clarity" if float(clarity) >= 6
+                else "moderate clarity" if float(clarity) >= 4
+                else "low clarity"
+            )
+            filler_desc = (
+                "minimal filler words" if fillers == "low"
+                else "frequent filler words" if fillers == "high"
+                else "occasional filler words"
+            )
+            audio_scores["summary"] = (
+                f"The speaker demonstrated a {sentiment} sentiment with a {tone} tone. "
+                f"Delivery was {pace}-paced with {clarity_desc} and {energy} energy. "
+                f"Speech contained {filler_desc}."
+            )
+
+            # qualitative_feedback injection removed — speech_analysis in build_public_response() handles this now
+            # if "results" in result:
+            #     result["results"]["qualitative_feedback"] = audio_scores
+            # else:
+            #     result["qualitative_feedback"] = audio_scores
+
+
+        print("API overall_score before return:", result.get("overall_score"))
+        print("API final_score before return:", result.get("final_score"))
+
+        # ── Enforce final key order ───────────────────────────────────────────
+        # Desired: analysis_version → body → speech_score → speech_analysis → transcript → overall_score
+        ordered = {}
+        for key in ("analysis_version", "body", "speech_score", "speech_analysis",
+                    "transcript", "overall_score"):
+            if key in result:
+                ordered[key] = result[key]
+        # carry through any remaining keys not in the fixed list
+        for key, val in result.items():
+            if key not in ordered:
+                ordered[key] = val
+        return ordered
+
 
     except Exception as e:
         # Log full stack trace for debugging in server logs

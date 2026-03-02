@@ -1,0 +1,20 @@
+{
+    "uploads/EYE1.mp4": {
+        "ECR_old": 0.1068,
+        "ECR_new": 0.1068,
+        "gaze_switches_per_min": 22.29,
+        "sustained_contact_ratio": 0.1068
+    },
+    "uploads/EYE3.mp4": {
+        "ECR_old": 0.0344,
+        "ECR_new": 0.0344,
+        "gaze_switches_per_min": 21.56,
+        "sustained_contact_ratio": 0.0344
+    },
+    "uploads/poss2.mp4": {
+        "ECR_old": 0.0798,
+        "ECR_new": 0.0598,
+        "gaze_switches_per_min": 92.31,
+        "sustained_contact_ratio": 0.0798
+    }
+}

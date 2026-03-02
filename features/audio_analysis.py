@@ -124,6 +124,8 @@ class AudioAnalyzer:
                 mean_pitch_safe = pitch_mean if pitch_mean > 1e-6 else 1e-6
                 pitch_variability = pitch_std / mean_pitch_safe
             
+            duration_sec = float(len(y)) / float(sr) if sr > 0 else 0.0
+
             return {
                 'metrics': {
                     'rms_mean': round(rms_mean, 4),
@@ -131,9 +133,12 @@ class AudioAnalyzer:
                     'pitch_mean_hz': round(pitch_mean, 2),
                     'pitch_std_hz': round(pitch_std, 2),
                     'energy_variability_score': round(energy_variability, 4),
-                    'pitch_variability_score': round(pitch_variability, 4)
+                    'pitch_variability_score': round(pitch_variability, 4),
+                    # Exposed here so the speech-activity gate in video_utils can read it
+                    'voiced_ratio': round(voiced_ratio, 3),
                 },
                 'reliability_score': round(final_reliability, 4),
+                'duration_sec': round(duration_sec, 3),
                 'diagnostics': reliability_details
             }
 

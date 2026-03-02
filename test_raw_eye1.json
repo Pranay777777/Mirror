@@ -1,0 +1,57 @@
+{
+  "status": "success",
+  "filename": "EYE1.mp4",
+  "analysis_version": "v2.1_stabilized",
+  "results": {
+    "summary_view": {},
+    "multimodal_analysis": {
+      "analysis_version": "v2.2_frozen_calibrated",
+      "body": {
+        "posture_score": 98.0,
+        "engagement_score": 0.0,
+        "head_orientation_score": 0.0,
+        "expression_score": null,
+        "body_total": 29.4,
+        "interpretation": "Excellent body alignment with very high stability and minimal movement. Poor eye contact and unstable attention focus."
+      },
+      "speech_score": {
+        "professionalism": 48.0,
+        "communication": 3.0,
+        "confidence": 50.4,
+        "voice_quality": 5.7,
+        "speech_total": 3.0
+      },
+      "speech_analysis": {
+        "sentiment": null,
+        "tone_quality": "not_detected",
+        "sarcasm_detected": null,
+        "pace_wpm": 13.9,
+        "clarity_score": null,
+        "energy_level": 100.0,
+        "filler_rate": 0.0,
+        "pause_rate": 0.0,
+        "analysis_summary": "Excellent body alignment with very high stability and minimal movement. Poor eye contact and unstable attention focus. Speech delivered at slow pace (14 WPM) with minimal fillers."
+      },
+      "final_score": 23.0,
+      "transcript": {
+        "text": "",
+        "language_code": "en"
+      }
+    },
+    "qualitative_feedback": {
+      "sentiment": "neutral",
+      "tone_quality": "inappropriate",
+      "professionalism_score": 2.0,
+      "communication_score": 1.0,
+      "voice_quality_feedback": "The response is too brief and lacks detail.",
+      "confidence": 0.3,
+      "analysis_notes": "The transcript is extremely short and consists of a single word, leading to a low effectiveness in communication and professionalism. The lack of context and depth significantly impacts the scores."
+    },
+    "transcript": "request_id='20260224_2dde0071-c128-4d3f-8a7e-06df942ff056' transcript='Yes.' language_code='hi-IN' diarized_transcript=None language_probability=None"
+  },
+  "metadata": {
+    "processing_method": "camera_invariant_geometry",
+    "temporal_analysis": true,
+    "confidence_estimation": true
+  }
+}

@@ -1,0 +1,35 @@
+# Mirror Backend: Technical Architecture & Codebase Walkthrough
+
+## 1. System Overview
+The **Mirror Backend** is a scientifically defensible, camera-invariant video analysis system. It processes human communication (video, audio, text) to provide objective scores on body language, engagement, and speech delivery.
+It is built on FastAPI ([main.py](file:///c:/Users/aim4g/Desktop/tmi/Mirror_Backend_New_fresh/Mirror_Backend_New_fresh/main.py)) which exposes the `/analyze` endpoint.
+
+## 2. Core Processing Pipeline ([utils/video_utils.py](file:///c:/Users/aim4g/Desktop/tmi/Mirror_Backend_New_fresh/Mirror_Backend_New_fresh/utils/video_utils.py))
+The main entry point for video analysis is the [analyze_video()](file:///c:/Users/aim4g/Desktop/tmi/Mirror_Backend_New_fresh/Mirror_Backend_New_fresh/utils/video_utils.py#41-558) function, which acts as the orchestrator for all modalities. The architecture follows a strict, multi-stage pipeline:
+
+1. **Geometry Processing (Per-Frame)**: `NormalizedGeometry.process(frame)` uses MediaPipe Holistic to extract raw landmarks, transforming them into camera-invariant ratios (e.g., eye openness, smile ratio).
+2. **Temporal Accumulation**: `TemporalFeatures.add_frame()` and `HeadPoseMetrics.add_frame()` buffer the per-frame geometric features for sliding-window analysis over time.
+3. **Audio Extraction**: `AudioAnalyzer` runs low-level audio metric extraction using Librosa for pitch, energy variability, and reliability.
+4. **Speech & Linguistic Processing**: Audio is transcribed via Sarvam AI ([utils/audio_utils.py](file:///c:/Users/aim4g/Desktop/tmi/Mirror_Backend_New_fresh/Mirror_Backend_New_fresh/utils/audio_utils.py)), then analyzed by [SpeechMetrics](file:///c:/Users/aim4g/Desktop/tmi/Mirror_Backend_New_fresh/Mirror_Backend_New_fresh/features/speech_metrics.py#8-145) for words-per-minute, pauses, and filler words.
+5. **OpenAI Scoring**: [utils/scoring_utils.py](file:///c:/Users/aim4g/Desktop/tmi/Mirror_Backend_New_fresh/Mirror_Backend_New_fresh/utils/scoring_utils.py) uses GPT-4o-mini to rate the transcript on professionalism, communication, and tone.
+6. **Aggregation & Fusion**: The buffered geometric patterns are aggregated into stability and variability scores. These are fused with audio/speech scores into the final standard JSON response.
+
+## 3. Geometric and Temporal Features
+The system prioritizes **Camera-Invariant** metrics:
+- **[features/normalized_geometry.py](file:///c:/Users/aim4g/Desktop/tmi/Mirror_Backend_New_fresh/Mirror_Backend_New_fresh/features/normalized_geometry.py)**: Instead of tracking raw pixels, it computes ratios like Eye Aspect Ratio (EAR), mouth-to-face-height, and shoulder tilt angle. This guarantees that candidate distance from the camera does not skew the scores.
+- **[features/temporal_features.py](file:///c:/Users/aim4g/Desktop/tmi/Mirror_Backend_New_fresh/Mirror_Backend_New_fresh/features/temporal_features.py)**: This is the behavioral workhorse. It calculates coefficient of variation (stability), signal confidence, blink rates via Z-scores, and sustained attention spans over thousands of frames.
+- **[features/head_pose_metrics.py](file:///c:/Users/aim4g/Desktop/tmi/Mirror_Backend_New_fresh/Mirror_Backend_New_fresh/features/head_pose_metrics.py)**: Computes 3D head yaw/pitch/roll using OpenCV `solvePnP` against a generic 3D face model setup.
+
+## 4. Multi-Tier Confidence Architecture
+Every final score has an associated confidence metric, calculated via [multimodal_confidence_fusion()](file:///c:/Users/aim4g/Desktop/tmi/Mirror_Backend_New_fresh/Mirror_Backend_New_fresh/utils/video_utils.py#30-40):
+- **Visual Confidence**: Detection rate of face/pose landmarks + temporal data completeness.
+- **Audio Confidence**: Vocal reliability and SNR.
+- **Speech Confidence**: Presence of intelligible semantic sentences.
+
+## 5. Scoring Weights (Production `v3.1`)
+- **Body Result (40%)**: Posture (30%), Engagement (30%), Eye Contact Ratio (20%), Ocular Stability (10%), Expression (10%).
+- **Speech Result (40%)**: Words Per Minute, Filler rates, Pauses, combined with an LLM evaluation.
+- **Confidence Rating (20%)**: Higher overall system confidence raises professionalism scores.
+
+## Conclusion
+The Mirror Backend is fully internalized. Its components are distinctly separated (geometric extraction vs temporal aggregation vs heuristic scoring), making it robust for future AI enhancements and pipeline modifications.

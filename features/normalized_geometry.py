@@ -42,9 +42,7 @@ _LEFT_EYE_EAR = [33, 160, 159, 133, 144, 145]
 # Right eye: inner(362), top1(385), top2(386), outer(263), bot1(380), bot2(374)
 _RIGHT_EYE_EAR = [362, 385, 386, 263, 380, 374]
 
-# Iris center landmarks (available when refine_face_landmarks=True)
-_LEFT_IRIS_CENTER = 468
-_RIGHT_IRIS_CENTER = 473
+
 
 
 class NormalizedGeometry:
@@ -62,7 +60,7 @@ class NormalizedGeometry:
             model_complexity=0,
             smooth_landmarks=True,
             enable_segmentation=False,
-            refine_face_landmarks=True,  # Critical for iris/gaze
+            refine_face_landmarks=False,  # Optimization: iris landmarks no longer needed for gaze
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5
         )
@@ -252,145 +250,7 @@ class NormalizedGeometry:
 
         return (math.degrees(yaw), math.degrees(pitch), math.degrees(roll))
 
-    # ------------------------------------------------------------------
-    # Gaze Vector Estimation
-    # ------------------------------------------------------------------
-    def _estimate_gaze(self, face_landmarks) -> Optional[float]:
-        """
-        Estimate gaze alignment angle (degrees) from iris position + head pose.
 
-        Returns:
-            Dict with keys 'gaze_angle', 'gaze_yaw', 'gaze_pitch',
-            or None if unavailable.
-        """
-        n_lm = len(face_landmarks.landmark)
-        if n_lm < 474:
-            return None
-
-        # --- Iris offset within eye (horizontal + vertical) ---
-        def _iris_offset(iris_idx, eye_indices):
-            """Return (h_offset, v_offset) as fraction: 0 = centre, ±1 = edge."""
-            iris = face_landmarks.landmark[iris_idx]
-            outer = face_landmarks.landmark[eye_indices[0]]
-            inner = face_landmarks.landmark[eye_indices[3]]
-            top1 = face_landmarks.landmark[eye_indices[1]]
-            bot2 = face_landmarks.landmark[eye_indices[5]]
-
-            eye_w = math.sqrt((outer.x - inner.x) ** 2 + (outer.y - inner.y) ** 2)
-            eye_h = math.sqrt((top1.x - bot2.x) ** 2 + (top1.y - bot2.y) ** 2)
-            cx = (outer.x + inner.x) / 2
-            cy = (top1.y + bot2.y) / 2
-
-            h_off = (iris.x - cx) / (eye_w + 1e-8)
-            v_off = (iris.y - cy) / (eye_h + 1e-8)
-            return h_off, v_off
-
-        lh, lv = _iris_offset(_LEFT_IRIS_CENTER, _LEFT_EYE_EAR)
-        rh, rv = _iris_offset(_RIGHT_IRIS_CENTER, _RIGHT_EYE_EAR)
-
-        # Average offsets (both eyes for robustness)
-        h_offset = (lh + rh) / 2.0
-        v_offset = (lv + rv) / 2.0
-
-        # Convert iris offset to approximate gaze deviation in degrees.
-        # Empirical mapping: full offset ≈ 30° deviation.
-        iris_yaw_deg = h_offset * 30.0
-        iris_pitch_deg = v_offset * 30.0
-
-        # Combine with head pose if available
-        head_pose = self._estimate_head_pose(face_landmarks)
-        if head_pose is not None:
-            head_yaw, head_pitch, _ = head_pose
-            total_yaw = head_yaw + iris_yaw_deg
-            total_pitch = head_pitch + iris_pitch_deg
-        else:
-            total_yaw = iris_yaw_deg
-            total_pitch = iris_pitch_deg
-
-        # Convert to radians for vector calculation
-        yaw_rad = math.radians(total_yaw)
-        pitch_rad = math.radians(total_pitch)
-
-        # Gaze vector from Euler angles (assuming standard PnP coordinate system)
-        # Yaw=0, Pitch=0 -> (0, 0, 1) [looking away]
-        # Yaw=180, Pitch=0 -> (0, 0, -1) [looking at camera]
-        # v = [sin(yaw)cos(pitch), -sin(pitch), cos(yaw)cos(pitch)]
-        gaze_vector = np.array([
-            math.sin(yaw_rad) * math.cos(pitch_rad),
-            -math.sin(pitch_rad),
-            math.cos(yaw_rad) * math.cos(pitch_rad)
-        ])
-
-        # Camera forward vector (looking from camera to subject is Z, so subject looking at camera is -Z)
-        # We want the angle between Gaze and "Vector TO Camera"
-        # Since camera is at origin and subject at +Z, vector TO camera is (0,0,-1)
-        camera_vector = np.array([0.0, 0.0, -1.0])
-
-        # Dot product
-        dot_product = np.dot(gaze_vector, camera_vector)
-        # Clamp for safety
-        dot_product = max(-1.0, min(1.0, dot_product))
-        
-        # Angle in degrees
-        gaze_angle = math.degrees(math.acos(dot_product))
-        # Helper function to normalize angle to [-180, 180]
-        def normalize_angle(angle):
-            return (angle + 180) % 360 - 180
-
-        # Normalized yaw relative to camera
-        # Camera is at -Z (effectively at 180 deg yaw in our coords)
-        # So deviation from camera is (total_yaw - 180)
-        # 180 -> 0 (Camera)
-        # 270 (-90) -> +90 (Left/Right?)
-        # 90 -> -90
-        
-        rel_yaw = normalize_angle(total_yaw - 180)
-        rel_pitch = normalize_angle(total_pitch)
-        
-        return {
-            'gaze_angle': gaze_angle,
-            'gaze_yaw': rel_yaw,     # 0=Camera, +ve=Left, -ve=Right (approx)
-            'gaze_pitch': rel_pitch  # 0=Level, +ve=Down, -ve=Up
-        }
-
-    # ------------------------------------------------------------------
-    # Lean Iris-Only Gaze Ratio (v2 — no head pose fusion)
-    # ------------------------------------------------------------------
-    def compute_iris_ratio(self, face_landmarks) -> Optional[float]:
-        """
-        Compute horizontal iris position as a ratio within the eye.
-
-        Uses averaged iris landmarks (468-472 left, 473-477 right).
-        Returns: float in [0, 1] where 0.5 = centered (looking at camera).
-                 None if iris landmarks unavailable.
-        """
-        n_lm = len(face_landmarks.landmark)
-        if n_lm < 478:
-            return None
-
-        def _eye_ratio_x(iris_indices, outer_idx, inner_idx):
-            """Horizontal iris center position as fraction of eye width."""
-            # Average iris landmark positions
-            iris_x = sum(face_landmarks.landmark[i].x for i in iris_indices) / len(iris_indices)
-            outer_x = face_landmarks.landmark[outer_idx].x
-            inner_x = face_landmarks.landmark[inner_idx].x
-            eye_width = abs(inner_x - outer_x)
-            if eye_width < 1e-8:
-                return None
-            ratio = (iris_x - outer_x) / (inner_x - outer_x)
-            return ratio
-
-        left_ratio = _eye_ratio_x([468, 469, 470, 471, 472], 33, 133)
-        right_ratio = _eye_ratio_x([473, 474, 475, 476, 477], 362, 263)
-
-        if left_ratio is None and right_ratio is None:
-            return None
-        elif left_ratio is None:
-            return right_ratio
-        elif right_ratio is None:
-            return left_ratio
-        else:
-            return (left_ratio + right_ratio) / 2.0
 
     # ------------------------------------------------------------------
     # Pose Features (unchanged core, preserved for backward compat)
@@ -502,6 +362,9 @@ class NormalizedGeometry:
             # 7. Torso Inclination & Keypoints (Redesign v2.1)
             # Needed for biomechanical uprightness and movement scoring
             if left_shoulder and right_shoulder:
+                features['left_shoulder_detected'] = True
+                features['right_shoulder_detected'] = True
+                
                 mid_shoulder = {
                     'x': (left_shoulder['x'] + right_shoulder['x']) / 2,
                     'y': (left_shoulder['y'] + right_shoulder['y']) / 2,
@@ -514,6 +377,7 @@ class NormalizedGeometry:
                 features['shoulder_width_raw'] = shoulder_width
                 
                 if left_hip and right_hip:
+                    features['hip_midpoint_available'] = True
                     mid_hip = {
                         'x': (left_hip['x'] + right_hip['x']) / 2,
                         'y': (left_hip['y'] + right_hip['y']) / 2,
@@ -532,11 +396,15 @@ class NormalizedGeometry:
                     angle_rad = math.atan2(abs(dx), abs(dy))
                     features['torso_inclination_deg'] = math.degrees(angle_rad)
                 else:
+                    features['hip_midpoint_available'] = False
                     # Fallback: assume upright if hips missing but shoulders present
                     features['torso_inclination_deg'] = 0.0
         
         # TIER 2: FALLBACK - Head only (minimal but usable)
         elif head_detected:
+            features['left_shoulder_detected'] = False
+            features['right_shoulder_detected'] = False
+            features['hip_midpoint_available'] = False
             features['shoulder_tilt_angle'] = 0.0  # Neutral (unknown)
             features['head_height_ratio'] = 0.5   # Neutral estimate
             features['shoulder_hip_ratio'] = 1.0  # Neutral estimate
@@ -545,6 +413,10 @@ class NormalizedGeometry:
         # TIER 3: EMERGENCY - Shoulders only
         elif shoulders_detected:
             if left_shoulder and right_shoulder:
+                features['left_shoulder_detected'] = True
+                features['right_shoulder_detected'] = True
+                features['hip_midpoint_available'] = False
+                
                 shoulder_vector = {
                     'x': right_shoulder['x'] - left_shoulder['x'],
                     'y': right_shoulder['y'] - left_shoulder['y'],
@@ -594,17 +466,6 @@ class NormalizedGeometry:
             features['head_yaw'] = head_pose[0]
             features['head_pitch'] = head_pose[1]
             features['head_roll'] = head_pose[2]
-
-        # ---- 3. Iris-Based Gaze Ratio (Lean Pipeline v2) ----
-        iris_ratio = self.compute_iris_ratio(face_landmarks)
-        if iris_ratio is not None:
-            features['iris_ratio_x'] = iris_ratio
-
-        # ---- 3b. Legacy Gaze (retained for head_pose_metrics / posture) ----
-        gaze_data = self._estimate_gaze(face_landmarks)
-        if gaze_data is not None:
-            features['gaze_yaw'] = gaze_data['gaze_yaw']
-            features['gaze_pitch'] = gaze_data['gaze_pitch']
 
         # ---- Extract key facial landmarks for remaining features ----
         left_eyebrow = {'x': face_landmarks.landmark[70].x, 'y': face_landmarks.landmark[70].y, 'z': face_landmarks.landmark[70].z}

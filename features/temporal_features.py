@@ -347,42 +347,113 @@ class TemporalFeatures:
         available = [c for c in evidence_cols if c in face_df.columns]
         total_frames = len(face_df)
 
-        # --- Smile Intensity (z-score normalised per video) ---
-        if 'smile_intensity' in face_df.columns:
-            smile = face_df['smile_intensity'].dropna()
-            evidence = len(smile) / max(total_frames, 1)
-            if len(smile) >= 5:
-                mean_s = smile.mean()
-                std_s = smile.std()
-                if std_s > 1e-8:
-                    z_smile = (smile - mean_s) / std_s
-                    # Fraction of frames above +1 std (above baseline)
-                    above_baseline = (z_smile > 1.0).sum() / len(smile)
-                    
-                    # Confidence: Evidence + Signal Stability
-                    # We don't use margin here because "neutral" (low smile) is a valid state
-                    # Confidence: Evidence + Signal Stability
-                    # We don't use margin here because "neutral" (low smile) is a valid state
-                    # Expression default sigma = 0.5 (safe assumption)
-                    signal_conf = self._calculate_signal_confidence(smile, expected_sigma=0.5)
-                    confidence = evidence * 0.5 + signal_conf * 0.5
-                    confidence = evidence * 0.5 + signal_conf * 0.5
-                    
-                    results['smile_intensity'] = self._format_result(
-                        round(float(above_baseline), 4), confidence, evidence,
-                        "adaptive_zscore"
+        # --- 2. Expression Classification (Continuous Normalization) ---
+        MIN_RATIO = 0.50
+        MAX_RATIO = 0.68
+        
+        print("\n===== EXPRESSION DEBUG START =====")
+        print("DEBUG total_frames:", total_frames)
+        print("Total face_df rows:", len(face_df))
+        
+        if 'expr_smile_ratio' in face_df.columns:
+            smile_ratios = face_df['expr_smile_ratio'].dropna()
+            total_valid_faces = len(smile_ratios)
+            face_detected_frames = total_valid_faces
+            face_detection_ratio = total_valid_faces / max(total_frames, 1)
+            
+            valid_ratios = smile_ratios
+            print("DEBUG face_detected_frames:", face_detected_frames)
+            print("Valid smile_ratio frames:", len(valid_ratios))
+            print("DEBUG face_detection_ratio:", face_detection_ratio)
+            
+            if face_detection_ratio < 0.40:
+                print("Expression aborted due to low face detection ratio (<40%)")
+            
+            if len(valid_ratios) > 0:
+                print("Raw smile_ratio min:", valid_ratios.min())
+                print("Raw smile_ratio max:", valid_ratios.max())
+                print("Raw smile_ratio mean:", valid_ratios.mean())
+                print("First 10 raw smile_ratio values:", valid_ratios.head(10).tolist())
+            
+            # Reliability Handling: < 40% valid face detection
+            if face_detection_ratio < 0.40:
+                low_cov_result = self._format_result(
+                    0.0, face_detection_ratio, face_detection_ratio, "continuous_normalization", "low_face_coverage"
+                )
+                print("DEBUG returning low-coverage expression metric:", low_cov_result)
+                results['expression_score'] = low_cov_result
+            else:
+                if total_valid_faces >= 5:
+                    # ── STEP 2: Temporal Smoothing ─────────────────────────────
+                    smoothed = smile_ratios.rolling(window=5, center=True, min_periods=1).mean()
+
+                    print("Smoothed ratio min:", smoothed.min())
+                    print("Smoothed ratio max:", smoothed.max())
+                    print("Smoothed ratio mean:", smoothed.mean())
+                    print("First 10 smoothed values:", smoothed.head(10).tolist())
+
+                    # ── STEP 2b: Positive Intensity ────────────────────────────
+                    normalized_smile = ((smoothed - MIN_RATIO) / (MAX_RATIO - MIN_RATIO)).clip(0.0, 1.0)
+                    positive_intensity = float(normalized_smile.mean())
+
+                    # ── STEP 3: Variability Score ──────────────────────────────
+                    variability_raw = float(smoothed.std())
+                    if variability_raw < 0.01:
+                        variability_score = 0.0
+                    elif variability_raw <= 0.06:
+                        variability_score = 1.0
+                    elif variability_raw <= 0.10:
+                        variability_score = 0.85
+                    else:
+                        variability_score = 0.70
+                    variability_score = float(np.clip(variability_score, 0.0, 1.0))
+
+                    # ── STEP 4: Neutral Balance Score ──────────────────────────
+                    neutral_mask = (smoothed >= 0.50) & (smoothed <= 0.58)
+                    neutral_ratio = float(neutral_mask.sum()) / max(len(smoothed), 1)
+                    if 0.40 <= neutral_ratio <= 0.60:
+                        neutral_balance_score = 1.0
+                    elif (0.25 <= neutral_ratio < 0.40) or (0.60 < neutral_ratio <= 0.75):
+                        neutral_balance_score = 0.8
+                    else:
+                        neutral_balance_score = 0.6
+                    neutral_balance_score = float(np.clip(neutral_balance_score, 0.0, 1.0))
+
+                    # ── STEP 5: Over-Smile Penalty ─────────────────────────────
+                    oversmile_ratio = float((smoothed > 0.65).sum()) / max(len(smoothed), 1)
+                    oversmile_penalty = 0.10 if oversmile_ratio > 0.70 else 0.0
+
+                    # ── STEP 6: Final Expression Score ─────────────────────────
+                    expression_raw = (
+                        (0.40 * positive_intensity)
+                        + (0.30 * variability_score)
+                        + (0.20 * neutral_balance_score)
+                        - (0.10 * oversmile_penalty)
+                    )
+                    expression_raw = float(np.clip(expression_raw, 0.0, 1.0))
+                    expression_score = expression_raw * 100.0
+
+                    print("MIN_RATIO:", MIN_RATIO, "| MAX_RATIO:", MAX_RATIO)
+                    print("[EXPR] positive_intensity:", round(positive_intensity, 4))
+                    print("[EXPR] variability_raw:", round(variability_raw, 4),
+                          "-> variability_score:", variability_score)
+                    print("[EXPR] neutral_ratio:", round(neutral_ratio, 4),
+                          "-> neutral_balance_score:", neutral_balance_score)
+                    print("[EXPR] oversmile_ratio:", round(oversmile_ratio, 4),
+                          "-> oversmile_penalty:", oversmile_penalty)
+                    print("[EXPR] expression_raw:", round(expression_raw, 4))
+                    print("[EXPR] Final expression_score (0–100):", round(expression_score, 2))
+
+                    results['expression_score'] = self._format_result(
+                        round(expression_score, 2), 1.0, face_detection_ratio, "multi_factor_light"
                     )
                 else:
-                    results['smile_intensity'] = self._format_result(
-                        0.0, evidence, evidence, "adaptive_zscore", "static_signal"
+                    results['expression_score'] = self._format_result(
+                        0.0, 0.0, face_detection_ratio, "continuous_normalization", "insufficient_samples"
                     )
-            else:
-                results['smile_intensity'] = self._format_result(
-                    None, 0.0, evidence, "adaptive_zscore", "insufficient_samples"
-                )
         else:
-            results['smile_intensity'] = self._format_result(
-                None, 0.0, 0.0, "adaptive_zscore", "missing_data"
+            results['expression_score'] = self._format_result(
+                0.0, 0.0, 0.0, "continuous_normalization", "missing_data"
             )
 
         # --- Expression Variability (std of action units) ---
@@ -440,6 +511,7 @@ class TemporalFeatures:
                 None, 0.0, 0.0, "temporal_variation", "missing_data"
             )
 
+        print("===== EXPRESSION DEBUG END =====\n")
         return results
 
     # ==================================================================
@@ -482,11 +554,53 @@ class TemporalFeatures:
         if len(pose_df) > cutoff_frame:
              valid_pose_df = pose_df.iloc[cutoff_frame:].reset_index(drop=True)
 
+        # ── TASK 1: Count Valid Pose Frames ──
+        # A frame is "valid" when we have real pose geometry.
+        # Use torso_inclination_deg as the most reliable proxy: it is only set
+        # when BOTH shoulders are detected and the geometry can be computed.
+        # Fall back to shoulder flag columns if inclination column is missing.
+        valid_pose_frames = 0
+        
+        if 'torso_inclination_deg' in pose_df.columns:
+            # Count frames where we actually have a torso measurement (not NaN)
+            valid_pose_frames = int(pose_df['torso_inclination_deg'].notna().sum())
+        elif 'left_shoulder_detected' in pose_df.columns and \
+             'right_shoulder_detected' in pose_df.columns:
+            # Fallback: use shoulder detection flags (may be bool or 1.0)
+            left_col = pose_df['left_shoulder_detected']
+            right_col = pose_df['right_shoulder_detected']
+            # Treat both boolean True and float 1.0 as detected
+            valid_mask = left_col.astype(bool) & right_col.astype(bool)
+            if 'hip_midpoint_available' in pose_df.columns:
+                hip_col = pose_df['hip_midpoint_available']
+                valid_mask = valid_mask & hip_col.astype(bool)
+            valid_pose_frames = int(valid_mask.sum())
+        else:
+            # Last resort: count frames where shoulder_midpoint_x is present (non-NaN)
+            if 'shoulder_midpoint_x' in pose_df.columns:
+                valid_pose_frames = int(pose_df['shoulder_midpoint_x'].notna().sum())
+            
+        valid_pose_ratio = valid_pose_frames / max(total_frames, 1)
+        print(f"[DEBUG valid_pose] total_frames={total_frames}, valid_pose_frames={valid_pose_frames}, ratio={valid_pose_ratio:.3f}")
+        results['valid_pose_ratio'] = self._format_result(
+            round(valid_pose_ratio, 4), 1.0, 1.0, "pose_validity_gate"
+        )
+        
+        # ── TASK 2: Prevent Empty Array Bias ──
+        skip_posture_calculations = False
+        if valid_pose_frames < 5:
+            # Set explicit defaults required by the gate
+            results['alignment_integrity'] = self._format_result(0.0, 0.0, 0.0, "geometric_alignment", "insufficient_valid_poses")
+            results['stability_index'] = self._format_result(0.0, 0.0, 0.0, "biomechanical_v4_exponential", "insufficient_valid_poses")
+            results['motion_activity_level'] = self._format_result(1.0, 0.0, 0.0, "biomechanical_v4", "insufficient_valid_poses")
+            results['sustained_lean_ratio'] = self._format_result(0.0, 0.0, 0.0, "lean_frame_fraction", "insufficient_valid_poses")
+            skip_posture_calculations = True
+
         # A. Alignment Integrity (Full Video)
         alignment_integrity = 0.0
         evidence_alignment = 0.0
         
-        if 'torso_inclination_deg' in pose_df.columns:
+        if not skip_posture_calculations and 'torso_inclination_deg' in pose_df.columns:
             inclination_full = pose_df['torso_inclination_deg'].dropna()
             evidence_alignment = len(inclination_full) / max(total_frames, 1)
             
@@ -503,14 +617,30 @@ class TemporalFeatures:
                     tilt_mean = tilt_series.mean()
                     total_lateral = max(tilt_mean, mean_inc)
             
-            # Alignment Score: 1 - min((angle/20)^2, 1)
-            penalty = (total_lateral / 20.0) ** 2
+            # Alignment Score: 1 - min((angle/20)^1.8, 1)
+            # Power 1.8 (vs old ^2) amplifies moderate lean (5-10°) more than
+            # perfect posture, creating separation without over-penalising large leans.
+            penalty = (total_lateral / 20.0) ** 1.8
             alignment_integrity = 1.0 - min(penalty, 1.0)
+
+            # Sustained Lean Detection: track what fraction of frames had meaningful tilt
+            # Used by video_utils.py to apply a lean penalty when tilt is persistent.
+            if 'shoulder_tilt_angle' in pose_df.columns:
+                tilt_all = pose_df['shoulder_tilt_angle'].dropna().abs()
+                lean_frames = (tilt_all > 6.0).sum()   # >6° counts as a lean frame
+                results['sustained_lean_ratio'] = self._format_result(
+                    round(float(lean_frames / max(len(tilt_all), 1)), 4),
+                    1.0, evidence_alignment, "lean_frame_fraction"
+                )
+            else:
+                results['sustained_lean_ratio'] = self._format_result(
+                    0.0, 0.0, 0.0, "lean_frame_fraction", "no_tilt_data"
+                )
             
             results['alignment_integrity'] = self._format_result(
                 round(alignment_integrity, 4), 1.0, evidence_alignment, "geometric_alignment"
             )
-        else:
+        elif not skip_posture_calculations:
              results['alignment_integrity'] = self._format_result(None, 0.0, 0.0, "geometric_alignment", "missing_torso_data")
 
         # B. Motion Activity Level (Valid Frames)
@@ -520,7 +650,8 @@ class TemporalFeatures:
         norm_a_score = 0.0
         evidence_motion = 0.0
         
-        if 'velocity_shoulder_midpoint_x' in valid_pose_df.columns and \
+        if not skip_posture_calculations and \
+           'velocity_shoulder_midpoint_x' in valid_pose_df.columns and \
            'velocity_shoulder_midpoint_y' in valid_pose_df.columns and \
            'shoulder_width_raw' in valid_pose_df.columns:
             
@@ -556,29 +687,32 @@ class TemporalFeatures:
             results['motion_activity_level'] = self._format_result(
                 round(float(motion_activity), 4), 1.0, evidence_motion, "biomechanical_v4"
             )
-        else:
+        elif not skip_posture_calculations:
              results['motion_activity_level'] = self._format_result(None, 0.0, 0.0, "velocity_acceleration_fusion", "missing_velocity_data")
 
         # C. Stability Index (v4.0 Exponential Suppression)
         # stability = alignment * exp(-1.5 * motion)
         # Ensures that even perfect alignment (1.0) drops rapidly if motion is high.
         
-        if results['alignment_integrity'] and results['motion_activity_level']:
+        if not skip_posture_calculations and \
+           results.get('alignment_integrity', {}).get('value') is not None and \
+           results.get('motion_activity_level', {}).get('value') is not None:
             # Using raw values calculated above:
             # alignment_integrity (float)
             # motion_activity (float)
             
-            # Base Stability Calculation (Biomechanical Model v4.0)
-            # stability = alignment * exp(-1.5 * motion)
-            stability_index = alignment_integrity * np.exp(-1.5 * motion_activity)
+            # Base Stability Calculation (Biomechanical Model v4.0 -> v4.1 Recalibrated for user request)
+            # stability = alignment * exp(-2.5 * motion) (increased from 1.5)
+            # We want to aggressively penalize movement (poss.mp4 target: 60-70)
+            stability_index = alignment_integrity * np.exp(-2.5 * motion_activity)
             
-            # Additional Motion-Based Damping (to ensure < 0.70 when motion > 0.18)
-            # Apply progressive penalties for sustained motion
-            if motion_activity > 0.08:
-                stability_index *= (1.0 - (0.6 * motion_activity))
+            # Additional Motion-Based Damping (to ensure < 0.60 when motion > 0.08)
+            # Apply progressive penalties for sustained motion (lowered thresholds/increased weights)
+            if motion_activity > 0.05:
+                stability_index *= (1.0 - (1.2 * motion_activity))
             
-            if motion_activity > 0.15:
-                stability_index *= (1.0 - (0.8 * motion_activity))
+            if motion_activity > 0.10:
+                stability_index *= (1.0 - (1.5 * motion_activity))
             
             # Clamp result [0,1]
             stability_index = float(np.clip(stability_index, 0.0, 1.0))
@@ -600,114 +734,66 @@ class TemporalFeatures:
             
             # Save this confidence into the stability_index metric so it can be retrieved later
             results['stability_index']['confidence'] = posture_conf_val
-        else:
+        elif not skip_posture_calculations:
             results['stability_index'] = self._format_result(None, 0.0, 0.0, "biomechanical_composite_v3", "insufficient_component_data")
             
         # Removed legacy metrics: posture_stability, posture_uprightness, overall_movement_intensity
 
-        # ── 5. Gaze Analysis (Lean Iris-Only Pipeline v3 — 3-Band) ──
-        # center_distance = abs(ratio_x - 0.5)
-        # strong_contact = center_distance < 0.05
-        # soft_contact   = center_distance < 0.10
+        # ── 5. Head Orientation Analysis (v3.1) ──
+        # Replaces Legacy Eye Contact Ratio (ECR)
+        # Score = % of frames where yaw between [-20, +20] and pitch between [-15, +15]
         
-        if 'iris_ratio_x' in face_df.columns:
-            ratio_x = face_df['iris_ratio_x']
-            evidence = ratio_x.notna().sum() / max(total_frames, 1)
+        if 'head_yaw' in face_df.columns and 'head_pitch' in face_df.columns:
+            yaw = face_df['head_yaw']
+            pitch = face_df['head_pitch']
+            
+            evidence = yaw.notna().sum() / max(total_frames, 1)
 
-            if evidence >= 0.1 and ratio_x.notna().sum() >= 5:
-                clean_ratio = ratio_x.dropna()
-                n = max(len(clean_ratio), 1)
+            if evidence >= 0.1 and yaw.notna().sum() >= 5:
+                valid_mask = yaw.notna() & pitch.notna()
+                clean_yaw = yaw[valid_mask]
+                clean_pitch = pitch[valid_mask]
+                n = max(len(clean_yaw), 1)
                 
-                # 1. Center Distance
-                center_distance = (clean_ratio - 0.5).abs()
+                # Normalize angles to [-90, 90] range to handle 180-degree coordinate system offsets from solvePnP
+                clean_yaw = (clean_yaw + 90) % 180 - 90
+                clean_pitch = (clean_pitch + 90) % 180 - 90
                 
-                # 2. 3-Band Contact Classification
-                strong_mask = (center_distance < 0.05)
-                soft_mask   = (center_distance < 0.10)
+                # Check for forward-facing frames
+                forward_yaw = clean_yaw.between(-20.0, 20.0)
+                forward_pitch = clean_pitch.between(-15.0, 15.0)
+                forward_mask = forward_yaw & forward_pitch
                 
-                ecr_strong = strong_mask.sum() / n
-                ecr_soft   = soft_mask.sum() / n
+                hos_raw = forward_mask.sum() / n
+                hos_raw = forward_mask.sum() / n
                 
-                # 3. Consistency = ECR_soft (primary metric)
-                consistency_val = ecr_soft
-                
-                # 4. Stability (Inverse Std of ratio_x — unchanged)
-                std_ratio = clean_ratio.std()
-                stability_val = 1.0 / (1.0 + std_ratio)
-                
-                # 5. Switch Count (using soft_mask)
-                switches = (soft_mask.astype(int).diff().abs() > 0).sum()
-                
-                # 6. Max Continuous Duration (using soft_mask)
-                soft_frames = soft_mask.sum()
-                if soft_frames > 0:
-                    mask_int = soft_mask.astype(int)
-                    groups = (mask_int != mask_int.shift()).cumsum()
-                    run_lengths = mask_int.groupby(groups).sum()
-                    contact_runs = run_lengths[mask_int.groupby(groups).first() == 1]
-                    max_duration_frames = contact_runs.max() if not contact_runs.empty else 0
-                    max_dur_s = max_duration_frames / self.fps
-                else:
-                    max_dur_s = 0.0
+                print(f"DEBUG HOS: total_frames={total_frames}, valid_frames={yaw.notna().sum()}, clean_frames={n}")
+                print(f"DEBUG HOS: yaw(mean={clean_yaw.mean():.1f}, min={clean_yaw.min():.1f}, max={clean_yaw.max():.1f})")
+                print(f"DEBUG HOS: pitch(mean={clean_pitch.mean():.1f}, min={clean_pitch.min():.1f}, max={clean_pitch.max():.1f})")
+                print(f"DEBUG HOS: forward_yaw_count={forward_yaw.sum()}, forward_pitch_count={forward_pitch.sum()}, forward_mask_count={forward_mask.sum()}")
+                print(f"DEBUG HOS: hos_raw={hos_raw:.4f}")
                 
                 # Diagnostics
                 diag = {
-                    "ECR_strong": round(float(ecr_strong), 4),
-                    "ECR_soft": round(float(ecr_soft), 4),
-                    "strong_ratio": round(float(ecr_strong), 4),
-                    "soft_ratio": round(float(ecr_soft), 4),
-                    "mean_ratio_x": round(float(clean_ratio.mean()), 4),
-                    "std_ratio_x": round(float(std_ratio), 4),
-                    "mean_center_distance": round(float(center_distance.mean()), 4),
-                    "logic_mode": "iris_ratio_v3"
+                    "HOS_raw": round(float(hos_raw), 4),
+                    "mean_yaw": round(float(clean_yaw.mean()), 4),
+                    "mean_pitch": round(float(clean_pitch.mean()), 4),
+                    "logic_mode": "head_orientation_v1"
                 }
 
-                # Store Results
-                results['eye_contact_consistency'] = self._format_result(
-                    round(float(consistency_val), 4), evidence, evidence, "iris_ratio_3band"
+                # Store Results (Reusing key format for downstream compatibility)
+                results['head_orientation_score'] = self._format_result(
+                    round(float(hos_raw), 4), evidence, evidence, "yaw_pitch_threshold"
                 )
-                results['eye_contact_consistency']['diagnostics'] = diag
-                
-                # Stability
-                results['gaze_stability'] = self._format_result(
-                    round(float(stability_val), 4), evidence, evidence, "inv_std_iris_ratio"
-                )
-                
-                # Switch Count
-                results['gaze_direction_switch_count'] = self._format_result(
-                    int(switches), evidence, evidence, "binary_switch_count"
-                )
-                
-                # Duration
-                results['max_continuous_eye_contact'] = self._format_result(
-                    round(float(max_dur_s), 2), evidence, evidence, "max_run_binary"
-                )
-                results['eye_contact_duration'] = results['max_continuous_eye_contact']
-                
-                # Stable Duration (rolling std of center_distance)
-                window = min(10, len(center_distance))
-                rolling_std = center_distance.rolling(window=window, center=True).std()
-                stable_frames_count = (rolling_std <= 0.05).sum()
-                stable_dur_s = stable_frames_count / self.fps
-                results['stable_gaze_duration'] = self._format_result(
-                     round(float(stable_dur_s), 2), evidence, evidence, "rolling_std_iris_ratio"
-                )
+                results['head_orientation_score']['diagnostics'] = diag
 
             else:
                  # Insufficient Data
-                 results['eye_contact_consistency'] = self._format_result(0.0, 0.0, evidence, "insufficient_data")
-                 results['gaze_stability'] = self._format_result(0.0, 0.0, evidence, "insufficient_data")
-                 results['gaze_direction_switch_count'] = self._format_result(0, 0.0, evidence, "insufficient_data")
-                 results['max_continuous_eye_contact'] = self._format_result(0.0, 0.0, evidence, "insufficient_data")
-                 results['stable_gaze_duration'] = self._format_result(0.0, 0.0, evidence, "insufficient_data")
+                 results['head_orientation_score'] = self._format_result(0.0, 0.0, evidence, "insufficient_data")
 
         else:
-            # Fallback (No Iris Ratio Data)
-            results['eye_contact_consistency'] = self._format_result(None, 0.0, 0.0, "iris_ratio", "missing_iris_data")
-            results['gaze_stability'] = self._format_result(None, 0.0, 0.0, "iris_ratio", "missing_iris_data")
-            results['gaze_direction_switch_count'] = self._format_result(0, 0.0, 0.0, "attention_shifts", "missing_iris_data")
-            results['max_continuous_eye_contact'] = self._format_result(0.0, 0.0, 0.0, "contiguous_segment", "missing_iris_data")
-            results['stable_gaze_duration'] = self._format_result(0.0, 0.0, 0.0, "rolling_std_iris_ratio", "missing_iris_data")
+            # Fallback (No Head Pose Data)
+            results['head_orientation_score'] = self._format_result(None, 0.0, 0.0, "yaw_pitch_threshold", "missing_head_pose_data")
 
         # ── 6. Overall Movement (Redesign v2.1) ──
         # Normalized velocity of shoulder midpoint
@@ -754,18 +840,29 @@ class TemporalFeatures:
                     None, 0.0, 0.0, "velocity_mean", "no_velocity_data"
                 )
 
+        # ── 6b. Expression Metrics Integration ──
+        expression_metrics = self._compute_expression_metrics(face_df)
+        if expression_metrics:
+            results.update(expression_metrics)
+            print("DEBUG finalize() expression_score:", results.get("expression_score"))
+        else:
+            # Safety fallback: Ensure expression metrics exist
+            results["expression_score"] = self._format_result(0.0, 0.0, 0.0, "fallback", "missing_data")
+            results["expression_variability"] = self._format_result(0.0, 0.0, 0.0, "fallback", "missing_data")
+            results["expression_dynamics"] = self._format_result(0.0, 0.0, 0.0, "fallback", "missing_data")
+
         # ── 7. Confidence Indicators ──
         # Redesigned to be weighted average of component certainties
         # Components:
         # 1. Data Coverage (completeness)
-        # 2. Gaze Confidence
+        # 2. Orientation Confidence
         # 3. Posture Confidence
         # 4. Blink Confidence
         
         # Retrieve component confidences (default to 0 if missing)
-        c_gaze = 0.0
-        if 'eye_contact_consistency' in results:
-             c_gaze = results['eye_contact_consistency'].get('confidence', 0.0)
+        c_orien = 0.0
+        if 'head_orientation_score' in results:
+             c_orien = results['head_orientation_score'].get('confidence', 0.0)
              
         c_posture = 0.0
         # Fix: Read from 'stability_index', not legacy 'posture_stability'
@@ -780,12 +877,12 @@ class TemporalFeatures:
         c_data = self._calculate_data_completeness(pose_df, face_df)
         
         # Weighted Average (Visual Domain Only)
-        # Weights:
-        # Gaze: 30% (Critical for interaction)
-        # Posture: 30% (Available in most frames)
-        # Blink: 20% (Subtle but important)
-        # Data: 20% (Base reliability)
-        final_conf = (c_gaze * 0.3) + (c_posture * 0.3) + (c_blink * 0.2) + (c_data * 0.2)
+        # Visual Confidence weights (revised for Head Orientation):
+        # Orientation: 30%
+        # Posture: 30%
+        # Blink: 20%
+        # Data: 20%
+        final_conf = (c_orien * 0.3) + (c_posture * 0.3) + (c_blink * 0.2) + (c_data * 0.2)
         
         # Add composite confidence metric
         results['visual_confidence'] = self._format_result(
@@ -793,15 +890,15 @@ class TemporalFeatures:
         )
         
         # Diagnostic print of confidence breakdown
-        print(f"VISUAL CONFIDENCE DIAGNOSTICS: Gaze={c_gaze:.2f}, Posture={c_posture:.2f}, "
+        print(f"VISUAL CONFIDENCE DIAGNOSTICS: Orientation={c_orien:.2f}, Posture={c_posture:.2f}, "
               f"Blink={c_blink:.2f}, Data={c_data:.2f} -> Final={final_conf:.4f}")
               
         print({
-            "gaze_certainty": c_gaze,
+            "orientation_certainty": c_orien,
             "posture_certainty": c_posture,
             "blink_certainty": c_blink,
             "data_certainty": c_data,
-            "weights_used": {"gaze": 0.3, "posture": 0.3, "blink": 0.2, "data": 0.2},
+            "weights_used": {"orientation": 0.3, "posture": 0.3, "blink": 0.2, "data": 0.2},
             "visual_confidence_before_rounding": final_conf
         })
 
@@ -861,7 +958,7 @@ class TemporalFeatures:
         pose_completeness = sum(1 for f in pose_features if f in pose_df.columns) / len(pose_features)
 
         face_features = ['left_eye_opening_ratio', 'right_eye_opening_ratio', 'mouth_opening_ratio',
-                         'smile_intensity', 'iris_ratio_x', 'eyebrow_raise_ratio']
+                         'smile_intensity', 'head_yaw', 'head_pitch', 'eyebrow_raise_ratio']
         face_completeness = sum(1 for f in face_features if f in face_df.columns) / len(face_features)
 
         return pose_completeness * 0.5 + face_completeness * 0.5
@@ -917,19 +1014,7 @@ class TemporalFeatures:
                     below = (z < self.blink_z_threshold).sum()
                     print(f"  frames below z={self.blink_z_threshold}: {below} / {len(z)}")
 
-        # --- Iris ratio distribution ---
-        if 'iris_ratio_x' in face_df.columns and len(face_df) > 0:
-            ratio_x = face_df['iris_ratio_x'].dropna()
-            if len(ratio_x) > 0:
-                print(f"\n--- IRIS RATIO_X DISTRIBUTION ---")
-                print(f"  count:   {len(ratio_x)}")
-                print(f"  min:     {ratio_x.min():.4f}")
-                print(f"  median:  {ratio_x.median():.4f}")
-                print(f"  mean:    {ratio_x.mean():.4f}")
-                print(f"  max:     {ratio_x.max():.4f}")
-                print(f"  std:     {ratio_x.std():.4f}")
-                centered = ((ratio_x - 0.5).abs() < 0.18).sum()
-                print(f"  frames centered (<0.18): {centered} / {len(ratio_x)} ({centered/len(ratio_x)*100:.1f}%)")
+
 
         # --- Smile intensity distribution ---
         if 'smile_intensity' in face_df.columns and len(face_df) > 0:
