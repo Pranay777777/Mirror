@@ -1,0 +1,27 @@
+# Core API
+fastapi
+uvicorn[standard]
+python-multipart
+python-dotenv
+
+# Vision / MediaPipe
+mediapipe==0.10.14
+opencv-python
+
+# Audio / Speech
+librosa
+numpy
+pydub
+faster-whisper
+
+# NLP / Linguistic
+openai
+sarvamai
+
+# Data
+pandas
+openpyxl
+requests
+
+# Video processing
+moviepy==1.0.3
