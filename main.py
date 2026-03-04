@@ -1,3 +1,4 @@
+from dotenv import load_dotenv
 import os
 import shutil
 import uuid
@@ -11,7 +12,6 @@ except Exception:
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
-from dotenv import load_dotenv
 
 from utils.video_utils import analyze_video
 from utils.audio_utils import process_audio

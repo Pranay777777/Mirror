@@ -1044,26 +1044,26 @@ def build_public_response(full_response: dict) -> dict:
         print(f"[LLM SUMMARY] OpenAI call failed ({_llm_err}) — using fallback template")
     # ──────────────────────────────────────────────────────────────────────────
 
+    def fmt(value, max_val):
+        """Format a score as 'X out of Y'."""
+        return f"{value} out of {max_val}"
+
     response = {
         "analysis_version": full_response.get("analysis_version", ""),
         "body": {
-            # Each field shows the metric's weighted contribution to body_total.
-            # body_total weights: posture 30%, engagement 30%, HOS 30%, expression 10%.
-            # posture_norm, engagement_norm, hos_norm, expression_norm remain 0–100 internally;
-            # only the displayed value is scaled by the weight (max values: 30/30/30/10).
-            "posture_score":          round(posture_norm     * 0.30, 1),  # out of 30
-            "engagement_score":       round(engagement_norm  * 0.30, 1),  # out of 30
-            "head_orientation_score": round(hos_norm         * 0.30, 1),  # out of 30
-            "expression_score":       round(expression_norm  * 0.10, 1),  # out of 10
-            "body_language_score": body_total,
+            "posture_score":          fmt(round(posture_norm     * 0.30, 1), 30),
+            "engagement_score":       fmt(round(engagement_norm  * 0.30, 1), 30),
+            "head_orientation_score": fmt(round(hos_norm         * 0.30, 1), 30),
+            "expression_score":       fmt(round(expression_norm  * 0.10, 1), 10),
+            "body_language_score":    fmt(body_total, 100),
             "interpretation": body_interpretation
         },
         "speech_score": {
-            "professionalism":     professionalism_norm,
-            "confidence":          confidence_norm,
-            "voice_quality":       voice_quality_norm,
-            "communication score": communication_score_norm,
-            "speech_total":        speech_total
+            "professionalism":     fmt(professionalism_norm,       100),
+            "confidence":          fmt(confidence_norm,            100),
+            "voice_quality":       fmt(voice_quality_norm,         100),
+            "communication score": fmt(communication_score_norm,   100),
+            "speech_total":        fmt(speech_total,               100)
         },
         "speech_analysis": {
             "sentiment":      _sentiment_val,
@@ -1083,6 +1083,7 @@ def build_public_response(full_response: dict) -> dict:
         # overall_score (below) carries the same value as a human-readable percentage.
     }
 
+
     # ── overall_score (body 50% + speech 50%) ─────────────────────────────────
     # Confidence is excluded. Uses body_total (0-100) and speech_total (0-100).
     overall_score_numeric = round(
@@ -1091,7 +1092,7 @@ def build_public_response(full_response: dict) -> dict:
         1
     )
     overall_score_numeric = max(0.0, min(100.0, overall_score_numeric))
-    _overall_str = f"{round(overall_score_numeric)}%"
+    _overall_str = f"{round(overall_score_numeric)}% out of 100%"
     print("DEBUG overall_score (50% body + 50% speech):", overall_score_numeric, "->", _overall_str)
     response["overall_score"] = _overall_str
     return response
